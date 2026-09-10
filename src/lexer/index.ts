@@ -13,8 +13,8 @@ export interface LexError {
 }
 
 /**
- * Phase 0/1 minimal lexer: TeX-ish tokenizer with source positions.
- * Covers: control sequences (\draw), groups {} [] (), ; , -- , comments %, numbers+units, identifiers.
+ * Phase 1 Lexer: TeX-ish tokenizer with source positions.
+ * Covers: control sequences, {}[]() ; , --, -> <- <-> |- -|, numbers+units, identifiers, % comments.
  */
 export function lex(input: string): { tokens: Token[]; errors: LexError[] } {
   const tokens: Token[] = [];
@@ -22,17 +22,16 @@ export function lex(input: string): { tokens: Token[]; errors: LexError[] } {
   let i = 0;
   let line = 1;
   let col = 1;
-
   const len = input.length;
 
-  function push(kind: string, text: string, startLine: number, startCol: number, startPos: number): void {
-    tokens.push({ kind, text, line: startLine, column: startCol, pos: startPos });
+  function push(kind: string, text: string, sl: number, sc: number, sp: number): void {
+    tokens.push({ kind, text, line: sl, column: sc, pos: sp });
   }
 
   while (i < len) {
-    const startPos = i;
-    const startLine = line;
-    const startCol = col;
+    const sp = i;
+    const sl = line;
+    const sc = col;
     const ch = input[i];
 
     // whitespace
@@ -54,60 +53,73 @@ export function lex(input: string): { tokens: Token[]; errors: LexError[] } {
       if (j < len && /[a-zA-Z@]/.test(input[j])) {
         while (j < len && /[a-zA-Z@]/.test(input[j])) j++;
       } else if (j < len) {
-        j++; // single non-letter e.g. \\, \;, \%
+        j++;
       }
       const text = input.slice(i, j);
-      const adv = j - i;
-      push("cs", text, startLine, startCol, startPos);
+      push("cs", text, sl, sc, sp);
       i = j;
-      col += adv;
+      col += j - sp;
       continue;
     }
 
-    // numbers with optional unit
-    if (/[0-9.\-+]/.test(ch) && /[0-9]/.test(input[i] === "-" || input[i] === "+" || input[i] === "." ? (input[i+1] ?? "") : ch)) {
-      let j = i;
-      if (input[j] === "+" || input[j] === "-") j++;
-      while (j < len && /[0-9]/.test(input[j])) j++;
-      if (j < len && input[j] === ".") { j++; while (j < len && /[0-9]/.test(input[j])) j++; }
-      // unit
-      const uStart = j;
-      while (j < len && /[a-zA-Z%]/.test(input[j])) j++;
-      const text = input.slice(i, j);
-      const hasUnit = j > uStart;
-      push(hasUnit ? "dimension" : "number", text, startLine, startCol, startPos);
-      col += j - i;
-      i = j;
-      continue;
+    // arrows / multi-char ops — longest first
+    if (input.startsWith("<->", i)) { push("op", "<->", sl, sc, sp); i += 3; col += 3; continue; }
+    if (input.startsWith("->", i)) { push("op", "->", sl, sc, sp); i += 2; col += 2; continue; }
+    if (input.startsWith("<-", i)) { push("op", "<-", sl, sc, sp); i += 2; col += 2; continue; }
+    if (input.startsWith("--", i)) { push("op", "--", sl, sc, sp); i += 2; col += 2; continue; }
+    if (input.startsWith("|-", i)) { push("op", "|-", sl, sc, sp); i += 2; col += 2; continue; }
+    if (input.startsWith("-|", i)) { push("op", "-|", sl, sc, sp); i += 2; col += 2; continue; }
+
+    // numbers with optional unit — only if looks like number
+    // Do before single-char '+' '-' to correctly capture e.g. "2cm"
+    if (/[0-9.\-+]/.test(ch)) {
+      const next = input[i + 1] ?? "";
+      const isNumberStart =
+        /[0-9]/.test(ch) ||
+        (ch === "." && /[0-9]/.test(next)) ||
+        ((ch === "+" || ch === "-") && (/[0-9]/.test(next) || (next === "." && /[0-9]/.test(input[i + 2] ?? ""))));
+      if (isNumberStart) {
+        let j = i;
+        if (input[j] === "+" || input[j] === "-") j++;
+        while (j < len && /[0-9]/.test(input[j])) j++;
+        if (j < len && input[j] === ".") { j++; while (j < len && /[0-9]/.test(input[j])) j++; }
+        const uStart = j;
+        while (j < len && /[a-zA-Z%]/.test(input[j])) j++;
+        const text = input.slice(i, j);
+        const hasUnit = j > uStart;
+        push(hasUnit ? "dimension" : "number", text, sl, sc, sp);
+        col += j - i;
+        i = j;
+        continue;
+      }
     }
 
-    // two-char operators -- , |- , -|
-    if (ch === "-" && input[i + 1] === "-") { push("op", "--", startLine, startCol, startPos); i += 2; col += 2; continue; }
-    if (ch === "|" && input[i + 1] === "-") { push("op", "|-", startLine, startCol, startPos); i += 2; col += 2; continue; }
-    if (ch === "-" && input[i + 1] === "|") { push("op", "-|", startLine, startCol, startPos); i += 2; col += 2; continue; }
-
-    // single char punctuation
+    // single char punctuation / brackets
     const singles: Record<string, string> = {
       "{": "lbrace", "}": "rbrace",
       "[": "lbracket", "]": "rbracket",
       "(": "lparen", ")": "rparen",
       ";": "semi", ",": "comma", ":": "colon", ".": "dot",
       "=": "equals", "/": "slash", "!": "bang",
+      ">": "gt", "<": "lt",
+      "+": "plus", "-": "minus",
+      "*": "star", "^": "caret", "_": "underscore",
+      "$": "dollar", "&": "amp", "#": "hash", "'": "quote", '"': "dquote",
     };
-    if (singles[ch]) { push(singles[ch], ch, startLine, startCol, startPos); i++; col++; continue; }
+    if (singles[ch]) { push(singles[ch], ch, sl, sc, sp); i++; col++; continue; }
 
-    // plain char
+    // identifiers (letters)
     if (/[a-zA-Z]/.test(ch)) {
       let j = i + 1;
       while (j < len && /[a-zA-Z0-9@]/.test(input[j])) j++;
-      push("ident", input.slice(i, j), startLine, startCol, startPos);
+      push("ident", input.slice(i, j), sl, sc, sp);
       col += j - i;
       i = j;
       continue;
     }
 
     // fallback single
-    push("char", ch, startLine, startCol, startPos);
+    push("char", ch, sl, sc, sp);
     i++; col++;
   }
 

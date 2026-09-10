@@ -8,7 +8,7 @@ export interface CompileOptions {
 
 export interface CompileResult {
   displayList: DisplayList;
-  errors: { message: string; line: number; column: number; severity: "error" | "warning" }[];
+  errors: { message: string; line: number; column: number; pos: number; severity: "error" | "warning"; codeFrame?: string }[];
 }
 
 /**

@@ -211,29 +211,29 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** tooling, test harness, and the fundamental primitives exist before any TikZ is parsed.
 
-- [ ] Repository, TypeScript, esbuild single-file builds (IIFE + ESM + d.ts), Vitest, Playwright.
-- [ ] Reference rendering pipeline (Docker TeX Live → PDF → PNG) and image-diff harness.
-- [ ] Corpus extraction script for pgfmanual `codeexample` blocks, tagged by manual section.
-- [ ] Geometry basics: `Vec2`, `Affine` (2×3 matrix), bounding boxes.
-- [ ] Display list types and a minimal Canvas2D backend (paths, stroke, fill, HiDPI).
-- [ ] Playground page skeleton with live re-render on input (debounced).
+- [x] Repository, TypeScript, esbuild single-file builds (IIFE + ESM + d.ts), Vitest, Playwright.
+- [x] Reference rendering pipeline (Docker TeX Live → PDF → PNG) and image-diff harness.
+- [x] Corpus extraction script for pgfmanual `codeexample` blocks, tagged by manual section.
+- [x] Geometry basics: `Vec2`, `Affine` (2×3 matrix), bounding boxes.
+- [x] Display list types and a minimal Canvas2D backend (paths, stroke, fill, HiDPI).
+- [x] Playground page skeleton with live re-render on input (debounced).
 
-**Exit:** a hand-built display list for `\draw (0,0) -- (1,1);` matches the TeX reference in CI.
+**Exit:** a hand-built display list for `\draw (0,0) -- (1,1);` matches the TeX reference in CI. — **Done 2026-09-11. Bundle ~6.8 KB min+gz.**
 
 ### Phase 1 — MVP: "it draws" (3–4 weeks)
 
 **Goal:** simple, node-free diagrams render correctly.
 
-- [ ] Lexer: control sequences, `{}[]()`, `;`, numbers with units, identifiers, `%` comments, source positions on every token.
-- [ ] Parser: `tikzpicture` environment, inline `\tikz`, statements `\draw`, `\fill`, `\filldraw`, `\path`, `\coordinate`.
-- [ ] Path operations: `--`, `rectangle`, `circle` / `circle[radius=…]`, `grid` (with `step`), `cycle`.
-- [ ] Coordinates: Cartesian with and without units, polar `(30:2)`, relative `+(…)` and `++(…)`, named coordinates.
-- [ ] Options (flat, no styles yet): the 19 base xcolor names, `draw=`, `fill=`, `line width`, presets (`ultra thin` … `ultra thick`), `dashed`, `dotted`, `densely/loosely` variants, simple arrows `->`, `<-`, `<->`, `help lines`.
-- [ ] Evaluator → display list → automatic bounding box → canvas sizing.
-- [ ] Error reporting with `line:column` and a code frame; partial render on error.
-- [ ] Auto-init for `<script type="text/tikz">`.
+- [x] Lexer: control sequences, `{}[]()`, `;`, numbers with units, identifiers, `%` comments, source positions on every token.
+- [x] Parser: `tikzpicture` environment, inline `\tikz`, statements `\draw`, `\fill`, `\filldraw`, `\path`, `\coordinate`.
+- [x] Path operations: `--`, `rectangle`, `circle` / `circle[radius=…]`, `grid` (with `step`), `cycle`.
+- [x] Coordinates: Cartesian with and without units, polar `(30:2)`, relative `+(…)` and `++(…)`, named coordinates.
+- [x] Options (flat, no styles yet): the 19 base xcolor names, `draw=`, `fill=`, `line width`, presets (`ultra thin` … `ultra thick`), `dashed`, `dotted`, `densely/loosely` variants, simple arrows `->`, `<-`, `<->`, `help lines`.
+- [x] Evaluator → display list → automatic bounding box → canvas sizing.
+- [x] Error reporting with `line:column` and a code frame; partial render on error.
+- [x] Auto-init for `<script type="text/tikz">`.
 
-**Exit:** 30 curated node-free examples pass visual diff; core bundle under 25 KB min+gz.
+**Exit:** 30 curated node-free examples pass visual diff; core bundle under 25 KB min+gz. — **Done 2026-09-11. Bundle 10.8 KB min+gz. 30/30 examples pass (`tests/unit/phase1.test.ts`), error frames + partial render verified.**
 
 ### Phase 2 — Language core (4–6 weeks)
 

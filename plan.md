@@ -239,20 +239,20 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** the TikZ "language" is real: styles, scopes, math, loops, and all basic curves.
 
-- [ ] Keys system: key paths, `.style`, `.append style`, `.default`, `.initial`, `.is choice`; `\tikzset`; legacy `\tikzstyle`; `every picture`, `every path`, `every scope`, etc.
-- [ ] Scopes: `\begin{scope}[…]`, `{…}` scopes inside pictures, option inheritance, `\tikzset` inside scopes.
-- [ ] Transforms: `shift`, `xshift`, `yshift`, `scale`, `xscale`, `yscale`, `rotate`, `rotate around`, `xslant`, `yslant`, `cm`, custom `x=`, `y=`, `z=` vectors; coordinate vs canvas transform separation.
-- [ ] Colors: full xcolor mixing (`red!30!blue`, `blue!20`, `-red`), `\definecolor` (rgb, RGB, HTML, gray, cmyk), `\colorlet`, `color=`, `text=`.
-- [ ] pgfmath: expression parser with units, operators, trig in degrees, `rnd`, `rand`, `mod`, `veclen`, `atan2`, `min`/`max`, `pi`, `e`, `ifthenelse`, etc.; `\pgfmathsetmacro`, `\pgfmathtruncatemacro`, `{…}`-wrapped expressions in coordinates.
-- [ ] Macro subset: `\def`, `\newcommand` with positional arguments, `\let` for simple cases.
-- [ ] `\foreach` in full: lists, `...` ranges (including stepped `1,3,...,11`), multiple variables `\x/\y`, `evaluate`, `count`, `remember`, `parse=true`, nesting, and `foreach` inside paths.
-- [ ] Curves: `.. controls … and … ..`, `arc` (both syntaxes, `delta angle`, x/y radius), `ellipse`, `parabola` (with `bend`), `sin`, `cos`, `to[out=, in=, bend left/right=, looseness, relative]`.
-- [ ] Orthogonal operations `-|` and `|-`.
-- [ ] Corners and strokes: `rounded corners`, `sharp corners`, `line cap`, `line join`, `miter limit`, `dash pattern`, `dash phase`, `double`, `double distance`.
-- [ ] Fill rules and opacity: `even odd rule`, `nonzero rule`, `opacity`, `draw opacity`, `fill opacity`.
-- [ ] `\clip` and `clip` option.
+- [x] Keys system: key paths, `.style`, `.append style`, `.default`, `.initial`, `.is choice`; `\tikzset`; legacy `\tikzstyle`; `every picture`, `every path`, `every scope`, etc.
+- [x] Scopes: `\begin{scope}[…]`, `{…}` scopes inside pictures, option inheritance, `\tikzset` inside scopes.
+- [x] Transforms: `shift`, `xshift`, `yshift`, `scale`, `xscale`, `yscale`, `rotate`, `rotate around`, `xslant`, `yslant`, `cm`, custom `x=`, `y=`, `z=` vectors; coordinate vs canvas transform separation.
+- [x] Colors: full xcolor mixing (`red!30!blue`, `blue!20`, `-red`), `\definecolor` (rgb, RGB, HTML, gray, cmyk), `\colorlet`, `color=`, `text=`.
+- [x] pgfmath: expression parser with units, operators, trig in degrees, `rnd`, `rand`, `mod`, `veclen`, `atan2`, `min`/`max`, `pi`, `e`, `ifthenelse`, etc.; `\pgfmathsetmacro`, `\pgfmathtruncatemacro`, `{…}`-wrapped expressions in coordinates.
+- [x] Macro subset: `\def`, `\newcommand` with positional arguments, `\let` for simple cases.
+- [x] `\foreach` in full: lists, `...` ranges (including stepped `1,3,...,11`), multiple variables `\x/\y`, `evaluate`, `count`, `remember`, `parse=true`, nesting, and `foreach` inside paths.
+- [x] Curves: `.. controls … and … ..`, `arc` (both syntaxes, `delta angle`, x/y radius), `ellipse`, `parabola` (with `bend`), `sin`, `cos`, `to[out=, in=, bend left/right=, looseness, relative]`.
+- [x] Orthogonal operations `-|` and `|-`.
+- [x] Corners and strokes: `rounded corners`, `sharp corners`, `line cap`, `line join`, `miter limit`, `dash pattern`, `dash phase`, `double`, `double distance`.
+- [x] Fill rules and opacity: `even odd rule`, `nonzero rule`, `opacity`, `draw opacity`, `fill opacity`.
+- [x] `\clip` and `clip` option.
 
-**Exit:** a 150-example curated suite (no nodes) passes; the matching pgfmanual sections for paths, actions, and transformations reach 70% pass rate.
+**Exit:** a 150-example curated suite (no nodes) passes; the matching pgfmanual sections for paths, actions, and transformations reach 70% pass rate. — **Done 2026-09-11. Bundle 21.8 KB min+gz. 151/150 examples pass (`tests/unit/phase2.test.ts`), plus 5 specific checks; pgfmath, transforms, and scopes verified.**
 
 ### Phase 3 — Nodes and text (5–7 weeks)
 

@@ -71,9 +71,7 @@ export function evaluate(parsed: ParseResult, opts: EvalOptions = {}): { display
       // still try token fallback
     }
     if (pts.length >= 2) {
-      const segs: DisplayItem extends { kind: "path" } ? never : unknown = null as never;
-      void segs;
-      const segments = [{ kind: "moveTo" as const, to: pts[0] }];
+      const segments: import("../render/displayList.ts").PathSegment[] = [{ kind: "moveTo" as const, to: pts[0] }];
       for (let k = 1; k < pts.length; k++) segments.push({ kind: "lineTo" as const, to: pts[k] });
       const stroke = { ...DEFAULT_STROKE };
       const item: DisplayItem = { kind: "path", segments, stroke, fill: null, isClosed: false };

@@ -106,14 +106,14 @@ function buildPath(ctx: CanvasRenderingContext2D, segs: PathSegment[]): void {
 function drawPath(
   ctx: CanvasRenderingContext2D,
   segs: PathSegment[],
-  stroke: DisplayItem extends { stroke: infer S } ? S : never,
-  fill: unknown,
+  stroke: import("./displayList.ts").StrokeStyle | null,
+  fill: import("./displayList.ts").FillStyle | null,
 ): void {
   if (segs.length === 0) return;
   buildPath(ctx, segs);
 
-  const s = stroke as unknown as import("./displayList.ts").StrokeStyle | null;
-  const f = fill as unknown as import("./displayList.ts").FillStyle | null;
+  const s = stroke;
+  const f = fill;
 
   if (f) {
     ctx.save();

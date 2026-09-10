@@ -8,7 +8,7 @@
     "declaration": true,
     "declarationMap": true,
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "sourceMap": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
@@ -16,7 +16,9 @@
     "noEmit": false,
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
   },
   "include": ["src/**/*", "tests/**/*", "scripts/**/*", "playground/**/*"],
   "exclude": ["node_modules", "dist"]

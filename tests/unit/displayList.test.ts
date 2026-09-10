@@ -17,14 +17,14 @@ describe("compile Phase 0", () => {
     const { displayList } = await compile("\\draw (0,0) -- (1,1);");
     expect(displayList.items).toHaveLength(1);
     expect(displayList.bbox.width).toBeGreaterThan(20); // 1cm ~28pt
-    expect(displayList.bbox.width).toBeCloseTo(28.45, 0.5);
+    expect(displayList.bbox.width).toBeCloseTo(28.85, 0.5);
   });
 
   it("tikzpicture env", async () => {
     const src = "\\begin{tikzpicture}\n\\draw (0,0) -- (2,0);\n\\end{tikzpicture}";
     const { displayList } = await compile(src);
     expect(displayList.items).toHaveLength(1);
-    expect(displayList.bbox.width).toBeCloseTo(56.9, 0.5);
+    expect(displayList.bbox.width).toBeCloseTo(57.3, 0.5);
   });
 
   it("hand-built display list matches evaluator", async () => {

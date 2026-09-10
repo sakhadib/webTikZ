@@ -1,0 +1,43 @@
+{
+  "name": "webtikz",
+  "version": "0.0.1",
+  "description": "Single-file TikZ parser and Canvas renderer — WebTikZ",
+  "type": "module",
+  "main": "dist/webtikz.js",
+  "module": "dist/webtikz.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/webtikz.mjs",
+      "require": "./dist/webtikz.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:watch": "node scripts/build.mjs --watch",
+    "dev": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:visual": "playwright test",
+    "lint": "tsc --noEmit",
+    "corpus:extract": "tsx scripts/extract-corpus.ts",
+    "reference:render": "tsx scripts/reference-render.ts",
+    "playground": "vite --open playground/index.html"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "playwright": "^1.50.0",
+    "@playwright/test": "^1.50.0",
+    "pixelmatch": "^6.0.0",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.0",
+    "jsdom": "^26.0.0"
+  },
+  "keywords": ["tikz", "pgf", "canvas", "latex", "rendering"],
+  "license": "MIT"
+}

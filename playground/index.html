@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebTikZ Playground — Phase 0</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;font:14px/1.4 system-ui, sans-serif; display:flex; flex-direction:column; height:100vh}
+    header{padding:10px 14px; border-bottom:1px solid #ddd; display:flex; align-items:center; gap:12px}
+    header h1{margin:0;font-size:16px} header span{color:#666; font-size:12px}
+    main{flex:1; display:grid; grid-template-columns:1fr 1fr; gap:0; min-height:0}
+    #editor{width:100%; height:100%; font:13px/1.5 ui-monospace, monospace; padding:10px; border:0; border-right:1px solid #ddd; resize:none; outline:none}
+    #preview{padding:12px; overflow:auto; display:flex; align-items:center; justify-content:center; background:#fafafa}
+    #preview canvas{border:1px solid #ddd; background:white; box-shadow:0 1px 4px rgba(0,0,0,.08)}
+    #errors{padding:8px 12px; color:#a00; font:12px ui-monospace, monospace; white-space:pre-wrap; border-top:1px solid #ddd; max-height:120px; overflow:auto}
+    #toolbar{margin-left:auto; display:flex; gap:8px}
+    button{padding:6px 10px; border:1px solid #ccc; background:white; border-radius:6px; cursor:pointer}
+    button:hover{background:#f5f5f5}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WebTikZ</h1><span>Phase 0 — live editor</span>
+    <div id="toolbar">
+      <button id="btn-png">Export PNG</button>
+      <button id="btn-svg">Export SVG</button>
+      <button id="btn-share">Copy share URL</button>
+    </div>
+  </header>
+  <main>
+    <textarea id="editor" spellcheck="false">\begin{tikzpicture}
+  \draw (0,0) -- (1,1);
+\end{tikzpicture}</textarea>
+    <div id="preview"><canvas id="canvas"></canvas></div>
+  </main>
+  <div id="errors"></div>
+  <script type="module">
+    import { WebTikZ } from "/src/index.ts";
+
+    const editor = document.getElementById("editor");
+    const canvas = document.getElementById("canvas");
+    const errorsEl = document.getElementById("errors");
+
+    let lastPic = null;
+    let timer = 0;
+
+    async function renderNow() {
+      const src = editor.value;
+      try {
+        const pic = await WebTikZ.render(src, canvas, { scale: 1.5, dpr: window.devicePixelRatio });
+        lastPic = pic;
+        errorsEl.textContent = pic.errors.length ? pic.errors.map(e=>`${e.line}:${e.column} ${e.message}`).join("\n") : "✓ rendered — bbox: " + JSON.stringify([pic.bbox.minX.toFixed(2), pic.bbox.minY.toFixed(2), pic.bbox.maxX.toFixed(2), pic.bbox.maxY.toFixed(2)]);
+        errorsEl.style.color = pic.errors.length ? "#a00" : "#0a0";
+        // persist to hash for share
+        history.replaceState(null, "", "#" + encodeURIComponent(src));
+      } catch (err) {
+        errorsEl.textContent = String(err);
+        errorsEl.style.color = "#a00";
+      }
+    }
+
+    // load from hash
+    if (location.hash.length > 1) {
+      try { editor.value = decodeURIComponent(location.hash.slice(1)); } catch {}
+    }
+
+    editor.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(renderNow, 120);
+    });
+
+    document.getElementById("btn-svg").onclick = () => {
+      if (!lastPic) return;
+      const svg = lastPic.toSVG();
+      const blob = new Blob([svg], { type: "image/svg+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = "webtikz.svg"; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    };
+    document.getElementById("btn-png").onclick = async () => {
+      if (!lastPic) return;
+      const blob = await lastPic.toPNG(2);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = "webtikz.png"; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    };
+    document.getElementById("btn-share").onclick = async () => {
+      await navigator.clipboard.writeText(location.href);
+      const old = errorsEl.textContent;
+      errorsEl.textContent = "URL copied to clipboard";
+      setTimeout(()=> errorsEl.textContent = old, 1200);
+    };
+
+    renderNow();
+  </script>
+</body>
+</html>

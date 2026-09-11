@@ -258,20 +258,20 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** labeled diagrams: flowcharts, graphs, annotated figures.
 
-- [ ] TextEngine interface; built-in engine with canvas `measureText`, font system (`font=`, `\tiny` … `\Huge`, `\bfseries`, `\itshape`, `\sffamily`, `\ttfamily`), bundled/recommended Latin Modern web font for metric fidelity.
-- [ ] Multi-line text: `\\`, `text width`, `align=left|center|right|justify|flush…`, line wrapping.
-- [ ] Mini-TeX math: `$…$`, `^`, `_`, Greek letters, common operators, relations, arrows, `\frac`, `\sqrt`, `\mathbf`, `\mathrm`, `\mathbb`, `\text`, `\cdot`, `\ldots`, `\hat`, `\bar`, `\vec`, sizing approximations based on TeX math font metrics.
-- [ ] MathJax and overlay adapters (optional).
-- [ ] Node core: `\node`, `node` on paths, `at`, names, `coordinate` shape, `rectangle`, `circle`, `ellipse`; `inner sep`, `outer sep`, `minimum width/height/size`, `text depth/height`.
-- [ ] Anchors: compass anchors, `center`, `base`, `mid` variants, `text`, angle anchors `(A.30)`, `anchor=` placement; `above`, `below`, `left`, `right` and combinations, with offsets.
-- [ ] Nodes on paths: `pos`, `midway`, `near start/end`, `very near`, `at start/end`, `sloped`, `auto`, `swap`, `allow upside down`; position resolved via Bézier parameter on the actual segment.
-- [ ] Shape-aware connections: `(A) -- (B)` attaches at shape borders; explicit anchors bypass it.
-- [ ] `label=`, `pin=` (with angle and options), `every label`, `every pin edge`.
-- [ ] positioning library: `right=of a`, `below=1cm of a`, `above=of a.east`, `on grid`, `node distance`.
-- [ ] Correct draw order: path nodes painted after their path; node background painted before text.
-- [ ] `rotate` with and without `transform shape`.
+- [x] TextEngine interface; built-in engine with canvas `measureText`, font system (`font=`, `\tiny` … `\Huge`, `\bfseries`, `\itshape`, `\sffamily`, `\ttfamily`), bundled/recommended Latin Modern web font for metric fidelity.
+- [x] Multi-line text: `\\`, `text width`, `align=left|center|right|justify|flush…`, line wrapping.
+- [x] Mini-TeX math: `$…$`, `^`, `_`, Greek letters, common operators, relations, arrows, `\frac`, `\sqrt`, `\mathbf`, `\mathrm`, `\mathbb`, `\text`, `\cdot`, `\ldots`, `\hat`, `\bar`, `\vec`, sizing approximations based on TeX math font metrics.
+- [x] MathJax and overlay adapters (optional).
+- [x] Node core: `\node`, `node` on paths, `at`, names, `coordinate` shape, `rectangle`, `circle`, `ellipse`; `inner sep`, `outer sep`, `minimum width/height/size`, `text depth/height`.
+- [x] Anchors: compass anchors, `center`, `base`, `mid` variants, `text`, angle anchors `(A.30)`, `anchor=` placement; `above`, `below`, `left`, `right` and combinations, with offsets.
+- [x] Nodes on paths: `pos`, `midway`, `near start/end`, `very near`, `at start/end`, `sloped`, `auto`, `swap`, `allow upside down`; position resolved via Bézier parameter on the actual segment.
+- [x] Shape-aware connections: `(A) -- (B)` attaches at shape borders; explicit anchors bypass it.
+- [x] `label=`, `pin=` (with angle and options), `every label`, `every pin edge`.
+- [x] positioning library: `right=of a`, `below=1cm of a`, `above=of a.east`, `on grid`, `node distance`.
+- [x] Correct draw order: path nodes painted after their path; node background painted before text.
+- [x] `rotate` with and without `transform shape`.
 
-**Exit:** flowchart and labeled-graph suites pass; measured text widths are within ±3% of LaTeX when using Latin Modern.
+**Exit:** flowchart and labeled-graph suites pass; measured text widths are within ±3% of LaTeX when using Latin Modern. — **Done 2026-09-11. Bundle 29 KB gz. 53 tests (`tests/unit/phase3.test.ts`) covering nodes, anchors, path nodes, labels, positioning.**
 
 ### Phase 4 — Geometry engine and styling depth (4–5 weeks)
 

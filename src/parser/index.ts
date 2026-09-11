@@ -10,6 +10,14 @@ export type Coordinate =
   | { kind: "polar"; angle: string; radius: string; loc: Loc; relative: "plus" | "plusplus" | null }
   | { kind: "named"; name: string; anchor?: string; loc: Loc; relative: "plus" | "plusplus" | null };
 
+export type PathNode = {
+  kind: "node";
+  options: Option[];
+  name?: string;
+  text: string;
+  loc: Loc;
+};
+
 export type PathOp =
   | { kind: "move"; coord: Coordinate; loc: Loc }
   | { kind: "lineTo"; coord: Coordinate; loc: Loc }
@@ -25,6 +33,7 @@ export type PathOp =
   | { kind: "sin"; to: Coordinate; loc: Loc }
   | { kind: "cos"; to: Coordinate; loc: Loc }
   | { kind: "to"; to: Coordinate; options: Option[]; loc: Loc }
+  | { kind: "pathNode"; node: PathNode; loc: Loc }
   | { kind: "cycle"; loc: Loc }
   | { kind: "raw"; text: string; loc: Loc };
 
@@ -41,6 +50,15 @@ export type CoordinateStatement = {
   name: string;
   at: Coordinate | null;
   options: Option[];
+  loc: Loc;
+};
+
+export type NodeStatement = {
+  kind: "node";
+  name?: string;
+  at: Coordinate | null;
+  options: Option[];
+  text: string;
   loc: Loc;
 };
 
@@ -104,7 +122,7 @@ export type ForeachStatement = {
   loc: Loc;
 };
 
-export type PictureBodyItem = PathStatement | CoordinateStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement;
+export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement;
 
 export type Picture = {
   kind: "picture";
@@ -463,22 +481,27 @@ export function parse(source: string): ParseResult {
         }
         continue;
       }
-      // -- line
+      // -- line (with optional nodes between -- and coordinate)
       if (t.kind === "op" && t.text === "--") {
         const loc = locFrom(consume());
-        // Check for cycle immediately after --
         if (peek()?.kind === "ident" && peek()!.text.toLowerCase() === "cycle") {
           const cloc = locFrom(consume()!);
           ops.push({ kind: "cycle", loc: cloc });
           continue;
         }
-        const coord = parseCoordinate();
-        if (!coord) {
-          pushError("Expected coordinate after '--'", t);
-          // skip to next op or semi
-          if (peek() && peek()!.kind !== "semi") consume();
-          continue;
+        // Collect any nodes between -- and the coordinate
+        while (peek()?.kind === "ident" && peek()!.text.toLowerCase() === "node") {
+          const nloc = locFrom(consume());
+          let nOpts = parseBracketOptions();
+          let nName: string | undefined;
+          if (peek()?.kind === "lparen") { const c=parseCoordinate(); if(c?.kind==="named") nName=c.name; }
+          if (peek()?.kind === "lbracket") { const extra=parseBracketOptions(); nOpts=[...nOpts,...extra]; }
+          let nText="";
+          if (peek()?.kind === "lbrace") nText=parseBraceRaw()??"";
+          ops.push({ kind: "pathNode", node: { kind: "node", options: nOpts, name: nName, text: nText, loc: nloc }, loc: nloc });
         }
+        const coord = parseCoordinate();
+        if (!coord) { pushError("Expected coordinate after '--'", t); if (peek() && peek()!.kind !== "semi") consume(); continue; }
         ops.push({ kind: "lineTo", coord, loc });
         continue;
       }
@@ -751,6 +774,31 @@ export function parse(source: string): ParseResult {
         ops.push({ kind: "orthH", coord, loc });
         continue;
       }
+      // node on path — e.g., node[options] (name) {text}
+      if (t.kind === "ident" && t.text.toLowerCase() === "node") {
+        const loc = locFrom(consume());
+        // options may appear before or after name; handle bracket immediately after node
+        let nOpts = parseBracketOptions();
+        let nName: string | undefined;
+        // optional (name)
+        if (peek()?.kind === "lparen") {
+          const c = parseCoordinate();
+          if (c?.kind === "named") nName = c.name;
+          else if (c) { /* not name? push back? */ }
+        }
+        // options may appear after name too
+        if (peek()?.kind === "lbracket") {
+          const extra = parseBracketOptions();
+          nOpts = [...nOpts, ...extra];
+        }
+        // text in braces {text}
+        let nText = "";
+        if (peek()?.kind === "lbrace") {
+          nText = parseBraceRaw() ?? "";
+        }
+        ops.push({ kind: "pathNode", node: { kind: "node", options: nOpts, name: nName, text: nText, loc }, loc });
+        continue;
+      }
       // Bare coordinate without operator -> implicit lineTo (TikZ allows mixing, but we treat as lineTo)
       if (t.kind === "lparen" || t.kind === "plus") {
         const coord = parseCoordinate();
@@ -1009,6 +1057,42 @@ export function parse(source: string): ParseResult {
     return { kind: "scope", options: [], body: [], loc };
   }
 
+  function parseNodeStatement(cs: Token): NodeStatement | null {
+    const loc = locFrom(cs);
+    // \node[opts] (name) at (coord) {text};
+    let opts = parseBracketOptions();
+    let name: string | undefined;
+    if (peek()?.kind === "lparen") {
+      const c = parseCoordinate();
+      if (c?.kind === "named") name = c.name;
+    }
+    if (peek()?.kind === "lbracket") {
+      const extra = parseBracketOptions();
+      opts = [...opts, ...extra];
+    }
+    // optional "at"
+    if (peek()?.kind === "ident" && peek()!.text.toLowerCase() === "at") {
+      consume();
+    }
+    let at: Coordinate | null = null;
+    if (peek()?.kind === "lparen" || peek()?.kind === "plus") {
+      at = parseCoordinate();
+    }
+    // also after at may have more brackets?
+    if (peek()?.kind === "lbracket") {
+      const extra2 = parseBracketOptions();
+      opts = [...opts, ...extra2];
+    }
+    // text in braces { ... }
+    let text = "";
+    if (peek()?.kind === "lbrace") {
+      text = parseBraceRaw() ?? "";
+    }
+    if (peek()?.kind === "semi") consume();
+    else pushError("Missing ';' after \\node", cs);
+    return { kind: "node", name, at, options: opts, text, loc };
+  }
+
   function parseAnyStatementInPicture(): PictureBodyItem | null {
     const t = peek();
     if (!t) return null;
@@ -1023,6 +1107,8 @@ export function parse(source: string): ParseResult {
           return parsePathStatement(consume()!);
         case "\\coordinate":
           return parsePathStatement(consume()!);
+        case "\\node":
+          return parseNodeStatement(consume()!);
         case "\\tikzset":
           return parseTikzSetStatement(consume()!);
         case "\\tikzstyle":
@@ -1199,6 +1285,9 @@ export function parse(source: string): ParseResult {
         if (t.kind === "cs" && ["\\draw", "\\fill", "\\filldraw", "\\path", "\\coordinate", "\\clip", "\\shade"].includes(t.text)) {
           const cs = consume()!;
           const stmt = parsePathStatement(cs);
+          if (stmt) body.push(stmt as never);
+        } else if (t.kind === "cs" && t.text === "\\node") {
+          const stmt = parseNodeStatement(consume()!);
           if (stmt) body.push(stmt as never);
         } else {
           consume();
@@ -1381,7 +1470,17 @@ export function parse(source: string): ParseResult {
       continue;
     }
     // Top-level statements that create implicit pictures
-    if (t.kind === "cs" && ["\\draw", "\\fill", "\\filldraw", "\\path", "\\coordinate", "\\clip", "\\shade"].includes(t.text)) {
+    if (t.kind === "cs" && ["\\draw", "\\fill", "\\filldraw", "\\path", "\\coordinate", "\\clip", "\\shade", "\\node"].includes(t.text)) {
+      if (t.text === "\\node") {
+        const stmt = parseNodeStatement(consume()!);
+        if (stmt) {
+          const pic: Picture = { kind: "picture", options: [], body: [...pendingPreamble, stmt as never], loc: locFrom(t) };
+          ast.push(pic);
+          pictures.push(pic);
+          pendingPreamble.length = 0;
+        }
+        continue;
+      }
       const cs = consume()!;
       const stmt = parsePathStatement(cs);
       if (stmt) {

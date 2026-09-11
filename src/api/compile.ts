@@ -16,10 +16,7 @@ export interface CompileResult {
  * Suitable for tests, Workers, and SSR.
  */
 export async function compile(source: string, opts: CompileOptions = {}): Promise<CompileResult> {
-  // Phase 0 is synchronous; async only for future TextEngine (Phase 3)
-  // where font loading and measurement are async. Keep Promise API from day one.
   const parsed = parse(source);
-  const { displayList, errors } = evaluate(parsed, opts);
-  // Future: await text measurement pass here.
+  const { displayList, errors } = await evaluate(parsed, opts);
   return { displayList, errors };
 }

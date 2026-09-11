@@ -10,17 +10,23 @@ import { evalMath } from "../math/index.ts";
 import { getKeySystem, handleTikzSet } from "../keys/index.ts";
 import type { ParseResult, Coordinate, PathOp, Option, Picture, ForeachStatement } from "../parser/index.ts";
 import { parse as parseSnippet } from "../parser/index.ts";
+import { BuiltinTextEngine, defaultEngine, parseFontSpec, defaultFont } from "../text/index.ts";
+import type { FontSpec } from "../text/index.ts";
+import { getShape } from "../shapes/index.ts";
+import { computeNodeDimensions, defaultNodeOptions, getAnchor, getBorderPoint } from "../nodes/index.ts";
+import type { NodeEntry } from "../nodes/index.ts";
 
 export interface EvalOptions { scale?: number; }
 export interface EvalError { message: string; line: number; column: number; pos: number; severity: "error" | "warning"; codeFrame?: string; }
 
-export function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): { displayList: DisplayList; errors: EvalError[] } {
+export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Promise<{ displayList: DisplayList; errors: EvalError[] }> {
   const errors: EvalError[] = parsed.errors.map(e => ({ ...e, severity: "error" as const }));
   const items: DisplayItem[] = [];
   let overall = new BBox();
   const nodes: Record<string, { center: Vec2; bbox: BBox }> = {};
 
   const named = new Map<string, Vec2>();
+  const globalNodeEntries = new Map<string, NodeEntry>();
   const macros = new Map<string, string>();
   // Fresh KeySystem per compile to avoid cross-test pollution, but preserve base styles
   // For now, we keep singleton but ensure every picture styles from previous compiles don't leak
@@ -32,24 +38,30 @@ export function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): { displa
   for (const pic of parsed.pictures) {
     // Apply picture-level options (transforms) — every picture styles are applied at path level via withEveryStyles, not here
     const picTransform = applyTransforms(Affine.IDENTITY, pic.options, errors, named, macros);
-    const picRes = evaluatePicture(pic, named, macros, picTransform, Affine.IDENTITY, errors);
+    const picRes = await evaluatePicture(pic, named, macros, picTransform, Affine.IDENTITY, errors, globalNodeEntries);
     for (const it of picRes.items) {
       items.push(it);
       if (it.kind === "path") overall.addBBox(computePathBBox(it.segments, it.stroke?.widthPt ?? 0));
-      else if (it.kind === "group") {
-        // For groups, compute bbox as union of children
+      else if (it.kind === "text") {
+        const w = (it as any).widthPt ?? 10;
+        const h = (it as any).heightPt ?? 5;
+        overall.addBBox(new BBox(it.at.x - w/2, it.at.y - h/2, it.at.x + w/2, it.at.y + h/2));
+      } else if (it.kind === "group") {
         let gb = new BBox();
         const collect = (g: DisplayItem) => {
           if (g.kind === "path") gb.addBBox(computePathBBox(g.segments, g.stroke?.widthPt ?? 0));
-          else if (g.kind === "group") (g as any).children.forEach(collect);
+          else if (g.kind === "text") {
+            const w = (g as any).widthPt ?? 10;
+            const h = (g as any).heightPt ?? 5;
+            gb.addBBox(new BBox(g.at.x - w/2, g.at.y - h/2, g.at.x + w/2, g.at.y + h/2));
+          } else if (g.kind === "group") (g as any).children.forEach(collect);
         };
         (it as any).children.forEach(collect);
         overall.addBBox(gb);
-        if ((it as any).clipPath) {
-          // clipPath itself contributes to bbox? In TikZ clip affects bbox unless overlay
-        }
       }
     }
+    // also add node bboxes directly from picRes.nodes (ensures nodes without path still in bbox)
+    for (const nn of Object.values(picRes.nodes)) overall.addBBox(nn.bbox);
     Object.assign(nodes, picRes.nodes);
   }
 
@@ -74,14 +86,15 @@ export function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): { displa
   return { displayList: { items, bbox: overall, nodes }, errors };
 }
 
-function evaluatePicture(
+async function evaluatePicture(
   pic: Picture,
   globalNamed: Map<string, Vec2>,
   globalMacros: Map<string, string>,
   parentTransform: Affine,
   parentCanvasTransform: Affine,
   errors: EvalError[],
-): { items: DisplayItem[]; nodes: Record<string, { center: Vec2; bbox: BBox }> } {
+  globalNodeEntries: Map<string, NodeEntry> = new Map(),
+): Promise<{ items: DisplayItem[]; nodes: Record<string, { center: Vec2; bbox: BBox }> }> {
   const items: DisplayItem[] = [];
   const nodes: Record<string, { center: Vec2; bbox: BBox }> = {};
   const localNamed = new Map(globalNamed);
@@ -91,26 +104,54 @@ function evaluatePicture(
   let curCanvasTransform = parentCanvasTransform;
   const ks = getKeySystem();
 
+  // Keep node entries for shape-aware resolution
+  const nodeEntries = globalNodeEntries;
+  // Helper to sync localNamed from nodeEntries
+  const syncNodeToNamed = (name: string, entry: NodeEntry) => {
+    localNamed.set(name, entry.center);
+    globalNamed.set(name, entry.center);
+    nodes[name] = { center: entry.center, bbox: entry.bbox };
+    nodeEntries.set(name, entry);
+  };
   // Helper to evaluate a single body item with current transforms
-  const evalBodyItem = (stmt: import("../parser/index.ts").PictureBodyItem, transform: Affine, canvasTransform: Affine) => {
+  const evalBodyItem = async (stmt: import("../parser/index.ts").PictureBodyItem, transform: Affine, canvasTransform: Affine) => {
     if (stmt.kind === "coordinate") {
-      const atRaw = stmt.at ? resolveCoord(stmt.at, localNamed, errors, new Vec2(0, 0), transform, localMacros) : new Vec2(0, 0);
+      const atRaw = stmt.at ? resolveCoord(stmt.at, localNamed, errors, new Vec2(0, 0), transform, localMacros, nodeEntries) : new Vec2(0, 0);
       if (atRaw) {
-        // Apply transform? Named coordinates are stored in transformed space
-        const at = atRaw; // already transformed via resolveCoord
+        const at = atRaw;
         localNamed.set(stmt.name, at);
         globalNamed.set(stmt.name, at);
         nodes[stmt.name] = { center: at, bbox: BBox.fromPoints([at]) };
+        // also as coordinate-shaped node for border handling (zero size)
+        const coordEntry: NodeEntry = { name: stmt.name, center: at, bbox: BBox.fromPoints([at]), shape: "coordinate", halfW: 0, halfH: 0, outerSep: 0, innerSep: 0, rotation: 0, transformShape: false, textBox: { width:0, height:0, depth:0 }, font: defaultFont(), text: "", anchor: "center" };
+        nodeEntries.set(stmt.name, coordEntry);
+      }
+    } else if (stmt.kind === "node") {
+      const entry = await evaluateNode(stmt, localNamed, nodeEntries, localMacros, transform, errors, ks);
+      if (entry) {
+        syncNodeToNamed(entry.name ?? stmt.name ?? `node_${items.length}`, entry);
+        const disp = nodeToDisplayItems(entry);
+        for (const d of disp) items.push(d);
+        // label/pin handling
+        const labelItems = await handleLabels(entry, stmt.options, localNamed, nodeEntries, localMacros, transform, errors, ks);
+        for (const li of labelItems) items.push(li);
       }
     } else if (stmt.kind === "path") {
-      // Expand options via keys including every picture/path
       const expandedOpts = ks.withEveryStyles(stmt.options, "path");
-      // Separate transform options from style options
       const { transform: newTransform, canvasTransform: newCanvasTransform, remainingOpts } = extractTransforms(transform, canvasTransform, expandedOpts, errors, localNamed, localMacros);
-      const res = evaluatePath({ ...stmt, options: remainingOpts }, localNamed, localMacros, newTransform, newCanvasTransform, errors);
+      const res = await evaluatePath({ ...stmt, options: remainingOpts }, localNamed, localMacros, newTransform, newCanvasTransform, errors, nodeEntries, ks);
       if (res) {
         items.push(res.item);
         for (const ex of res.extra) items.push(ex);
+        // Path nodes: they are already rendered as part of evaluatePath's extra nodes (pushed as items). Also add to nodeEntries/named
+        for (const pn of res.pathNodes) {
+          if (pn.entry.name) syncNodeToNamed(pn.entry.name, pn.entry);
+          else {
+            // unnamed nodes still need to be drawn but not in named
+          }
+        }
+        // res.nodeItems are already in items? we pushed via res.extra? Actually evaluatePath now returns pathNodes display handling inside extra? Keep extra as path nodes display.
+        for (const ni of res.nodeItems) items.push(ni);
       }
     } else if (stmt.kind === "scope") {
       // Scope: new transform from scope options, and recursive body
@@ -129,7 +170,7 @@ function evaluatePicture(
       for (const inner of stmt.body) {
         if (inner.kind === "scope") {
           // Nested scope — recurse via evalBodyItem with updated transforms
-          evalBodyItem(inner, curTransform, curCanvasTransform);
+          await evalBodyItem(inner, curTransform, curCanvasTransform);
         } else {
           // For other items, we need to evaluate with scope transform
           // We inline similar logic but with scope's transform
@@ -141,11 +182,21 @@ function evaluatePicture(
               nodes[inner.name] = { center: at, bbox: BBox.fromPoints([at]) };
               scopeNodes[inner.name] = { center: at, bbox: BBox.fromPoints([at]) };
             }
+          } else if (inner.kind === "node") {
+            const entry = await evaluateNode(inner as any, localNamed, nodeEntries, localMacros, curTransform, errors, ks);
+            if (entry) {
+              const name = entry.name ?? (inner as any).name ?? `node_${scopeItems.length}`;
+              localNamed.set(name, entry.center);
+              globalNamed.set(name, entry.center);
+              scopeNodes[name] = { center: entry.center, bbox: entry.bbox };
+              nodeEntries.set(name, entry);
+              for (const d of nodeToDisplayItems(entry)) scopeItems.push(d);
+            }
           } else if (inner.kind === "path") {
             const expOpts = ks.withEveryStyles(inner.options, "path");
             const { transform: nt, canvasTransform: nct, remainingOpts } = extractTransforms(curTransform, curCanvasTransform, expOpts, errors, localNamed, localMacros);
-            const res = evaluatePath({ ...inner, options: remainingOpts }, localNamed, localMacros, nt, nct, errors);
-            if (res) { scopeItems.push(res.item); for (const ex of res.extra) scopeItems.push(ex); }
+            const res = await evaluatePath({ ...inner, options: remainingOpts }, localNamed, localMacros, nt, nct, errors, nodeEntries, ks);
+            if (res) { scopeItems.push(res.item); for (const ex of res.extra) scopeItems.push(ex); for (const ni of res.nodeItems) scopeItems.push(ni); }
           } else if (inner.kind === "tikzset") {
             const { handleTikzSet } = require("../keys/index.ts");
             handleTikzSet(inner.arg, inner.loc);
@@ -172,7 +223,7 @@ function evaluatePicture(
             globalMacros.set("\\" + varName, numStr);
             globalMacros.set(varName, numStr);
           } else if (inner.kind === "foreach") {
-            const foreachItems = evaluateForeach(inner, localNamed, localMacros, curTransform, curCanvasTransform, errors);
+            const foreachItems = await evaluateForeach(inner, localNamed, localMacros, curTransform, curCanvasTransform, errors, nodeEntries);
             for (const fi of foreachItems) scopeItems.push(fi);
           }
         }
@@ -223,13 +274,13 @@ function evaluatePicture(
       globalMacros.set("\\" + varName, numStr);
       globalMacros.set(varName, numStr);
     } else if (stmt.kind === "foreach") {
-      const foreachItems = evaluateForeach(stmt, localNamed, localMacros, transform, canvasTransform, errors);
+      const foreachItems = await evaluateForeach(stmt, localNamed, localMacros, transform, canvasTransform, errors, nodeEntries);
       for (const fi of foreachItems) items.push(fi);
     }
   };
 
   for (const stmt of pic.body) {
-    evalBodyItem(stmt, curTransform, curCanvasTransform);
+    await evalBodyItem(stmt, curTransform, curCanvasTransform);
   }
 
   return { items, nodes };
@@ -476,14 +527,15 @@ function expandForeachList(list: string): string[][] {
   return out.map(e => e.split("/").map(s => s.trim()));
 }
 
-function evaluateForeach(
+async function evaluateForeach(
   stmt: ForeachStatement,
   named: Map<string, Vec2>,
   macros: Map<string, string>,
   transform: Affine,
   canvasTransform: Affine,
   errors: EvalError[],
-): DisplayItem[] {
+  nodeEntries: Map<string, NodeEntry> = new Map(),
+): Promise<DisplayItem[]> {
   const ks = getKeySystem();
   const items: DisplayItem[] = [];
   // Parse options for evaluate/count/remember
@@ -594,17 +646,17 @@ function evaluateForeach(
         if (inner.kind === "path") {
           const expOpts = ks.expandOptions(inner.options);
           const { transform: nt, canvasTransform: nct, remainingOpts } = extractTransforms(transform, canvasTransform, expOpts, errors, named, iterMacros);
-          const res = evaluatePath({ ...inner, options: remainingOpts }, named, iterMacros, nt, nct, errors);
+          const res = await evaluatePath({ ...inner, options: remainingOpts }, named, iterMacros, nt, nct, errors, nodeEntries);
           if (res) { items.push(res.item); for (const ex of res.extra) items.push(ex); }
         } else if (inner.kind === "scope") {
           // Evaluate scope with iterMacros
           // For simplicity, create a temporary picture evaluation
           const tmpPic = { kind: "picture" as const, options: [], body: [inner], loc: inner.loc };
-          const subRes = evaluatePicture(tmpPic, named, iterMacros, transform, canvasTransform, errors);
+          const subRes = await evaluatePicture(tmpPic, named, iterMacros, transform, canvasTransform, errors);
           for (const si of subRes.items) items.push(si);
         } else if (inner.kind === "foreach") {
           // Nested foreach
-          const nested = evaluateForeach(inner as any, named, iterMacros, transform, canvasTransform, errors);
+          const nested = await evaluateForeach(inner as any, named, iterMacros, transform, canvasTransform, errors, nodeEntries);
           for (const ni of nested) items.push(ni);
         } else if (inner.kind === "coordinate") {
           const at = inner.at ? resolveCoord(inner.at, named, errors, new Vec2(0, 0), transform, iterMacros) : new Vec2(0, 0);
@@ -619,201 +671,142 @@ function evaluateForeach(
   return items;
 }
 
-function evaluatePath(
+async function evaluatePath(
   stmt: import("../parser/index.ts").PathStatement,
   named: Map<string, Vec2>,
   macros: Map<string, string>,
   transform: Affine,
   _canvasTransform: Affine,
   errors: EvalError[],
-): { item: DisplayItem; extra: DisplayItem[] } | null {
-  // For Phase2, style expansion via keys already done by caller, but also handle remaining Phase2 stroke options here via resolveOptions
+  nodeEntries: Map<string, NodeEntry> = new Map(),
+  ksRef: ReturnType<typeof getKeySystem> | null = null,
+): Promise<{ item: DisplayItem; extra: DisplayItem[]; pathNodes: { entry: NodeEntry }[]; nodeItems: DisplayItem[] } | null> {
+  const ks = ksRef ?? getKeySystem();
+  void ks;
   const style = resolveOptions(stmt.options, stmt.action, errors);
   const segments: PathSegment[] = [];
+  const pathNodes: { spec: import("../parser/index.ts").PathNode; startPt: Vec2 | null; endPt: Vec2 | null; segmentIndex: number }[] = [];
+  let pendingNodes: import("../parser/index.ts").PathNode[] = [];
   let current = new Vec2(0, 0);
   let startOfPath: Vec2 | null = null;
   let hasMove = false;
-  let lastMove: Vec2 | null = null;
-  // Track rounded corners state — if present, we will post-process segments via applyRoundedCorners
   let roundedRadius: number | null = null;
   for (const o of stmt.options) {
     const k = o.key.trim().toLowerCase();
-    if (k === "rounded corners" && !o.value) roundedRadius = 4; // default 4pt in TikZ
+    if (k === "rounded corners" && !o.value) roundedRadius = 4;
     else if (k === "rounded corners" && o.value) {
       try { roundedRadius = evaluateDimensionString(o.value, macros); } catch { roundedRadius = 4; }
     }
   }
-
   function resolveCoordFull(c: Coordinate, cur: Vec2): Vec2 | null {
-    const v = resolveCoord(c, named, errors, cur, transform, macros);
+    const v = resolveCoord(c, named, errors, cur, transform, macros, nodeEntries);
     if (!v) return null;
     return v;
   }
-
+  const nodeEndpoints: { index: number; name: string; isStart: boolean }[] = [];
   for (const op of stmt.ops) {
+    if ((op as any).kind === "pathNode") {
+      pendingNodes.push((op as any).node);
+      continue;
+    }
     if (op.kind === "move") {
       const pt = resolveCoordFull(op.coord, current);
       if (!pt) continue;
-      // relative handling already inside resolveCoord
       segments.push({ kind: "moveTo", to: pt });
       current = pt;
       startOfPath = pt;
-      lastMove = pt;
       hasMove = true;
-      // if named coordinate inside move? No.
+      if (op.coord.kind==="named" && nodeEntries.has(op.coord.name) && !op.coord.anchor) nodeEndpoints.push({ index: segments.length-1, name: op.coord.name, isStart:true });
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: pt, endPt: pt, segmentIndex: segments.length-1 });
+      pendingNodes=[];
     } else if (op.kind === "lineTo") {
       const pt = resolveCoordFull(op.coord, current);
       if (!pt) continue;
-      if (!hasMove) {
-        // implicit move at origin? But should have move; if missing, start at current
-        segments.push({ kind: "moveTo", to: current });
-        startOfPath = current;
-        hasMove = true;
-      }
+      if (!hasMove) { segments.push({ kind: "moveTo", to: current }); startOfPath = current; hasMove = true; }
+      const segStart = current;
       segments.push({ kind: "lineTo", to: pt });
-      // update current depending on relative type: ++ updates, + does NOT update for next segment? Actually TikZ: + means relative but does NOT update current for next, ++ does.
-      // Our resolveCoord already computed relative endpoint; now decide if current should stay or move.
-      if (op.coord.relative === "plus") {
-        // do not update current - keep original
-        // but for next operation, the "current" for relative should still be original startOfSegment?
-        // TikZ semantics: (0,0) -- +(1,0) -- +(1,0) => second +(1,0) is still relative to (0,0)? Actually manual: + keeps current unchanged, so yes both are relative to same origin.
-        // We already computed pt as current+offset, but we should NOT set current = pt.
-        // So keep current unchanged.
-      } else {
-        current = pt;
-      }
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: segStart, endPt: pt, segmentIndex: segments.length-1 });
+      pendingNodes=[];
+      if (op.coord.kind==="named" && nodeEntries.has(op.coord.name) && !op.coord.anchor) nodeEndpoints.push({ index: segments.length-1, name: op.coord.name, isStart:false });
+      if (op.coord.relative === "plus") {} else { current = pt; }
     } else if (op.kind === "rectangle") {
       const pt = resolveCoordFull(op.coord, current);
       if (!pt) continue;
-      if (!hasMove || !startOfPath) {
-        errors.push({ message: "rectangle without start coordinate", line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "error" });
-        continue;
-      }
-      const a = current; // actually start is last point; rectangle from current to pt
-      // For first rectangle after move, current is start
-      // Need to guarantee start anchor is current before rectangle; if op follows move, current is move point.
-      // Generate rectangle path: move already at a, then 3 lines to complete.
-      // But segments already has move to a, so just add lines.
+      if (!hasMove || !startOfPath) { errors.push({ message: "rectangle without start", line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "error" }); continue; }
+      const a = current;
       const b = new Vec2(pt.x, a.y);
       const c = pt;
       const d = new Vec2(a.x, pt.y);
-      segments.push({ kind: "lineTo", to: b });
-      segments.push({ kind: "lineTo", to: c });
-      segments.push({ kind: "lineTo", to: d });
-      segments.push({ kind: "close" });
-      current = a; // after rectangle, current returns to start? In TikZ, after rectangle current is at second corner? Actually spec: rectangle is like --, current ends at second corner. For simplicity set to pt.
-      // TikZ: \draw (0,0) rectangle (1,1) -- (2,2) => line from (1,1) to (2,2). So current becomes pt.
-      current = pt;
-      startOfPath = pt;
+      segments.push({ kind: "lineTo", to: b }); segments.push({ kind: "lineTo", to: c }); segments.push({ kind: "lineTo", to: d }); segments.push({ kind: "close" });
+      current = pt; startOfPath = pt;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: a, endPt: pt, segmentIndex: segments.length-1 });
+      pendingNodes=[];
     } else if (op.kind === "circle") {
-      // center is current (last point). radius from op.
       const center = current;
-      if (!hasMove) {
-        errors.push({ message: "circle without center coordinate", line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "error" });
-        continue;
-      }
-      let radiusPt = 10; // default 10pt?
-      if (op.radiusPt) {
-        try { radiusPt = parseDimension(op.radiusPt); } catch (e) { errors.push({ message: String((e as Error).message), line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "warning" }); }
-      } else {
-        // try radius from options
-        const rOpt = op.options.find(o => o.key.toLowerCase().includes("radius"));
-        if (rOpt?.value) try { radiusPt = parseDimension(rOpt.value); } catch {}
-        else if (rOpt && rOpt.key.toLowerCase().startsWith("radius")) {
-          // key may be "radius=1cm" split already, value is "1cm"
-        }
-        // also support width? Not needed.
-        // Check for x radius / y radius for ellipse? For Phase1 only circle.
-      }
-      // If radius still not specified and circle had form circle (1cm) where we captured as named but failed? fallback already.
+      if (!hasMove) { errors.push({ message: "circle without center", line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "error" }); continue; }
+      let radiusPt = 10;
+      if (op.radiusPt) { try { radiusPt = parseDimension(op.radiusPt); } catch (e) { errors.push({ message: String((e as Error).message), line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "warning" }); } }
+      else { const rOpt = op.options.find(o => o.key.toLowerCase().includes("radius")); if (rOpt?.value) try { radiusPt = parseDimension(rOpt.value); } catch {} }
       const segs = circleSegments(center, radiusPt);
-      // If this is the first op being circle and we haven't moved? But we have move already, so replace? Actually for `(0,0) circle (1cm)` the move is center, not part of circle outline alone. The circle should be separate subpath starting at eastern point.
-      // Strategy: start new subpath for circle: moveTo (center.x+radius, center.y) then 4 curves.
-      // Our circleSegments returns moveTo + 3 curveTo + close? Implement.
-      // Append segments:
-      for (const s of segs) segments.push(s);
-      // current stays at center? In TikZ current after circle remains at center? Actually after `circle`, current is center. We'll keep center.
+      for (const ss of segs) segments.push(ss);
       current = center;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: center, endPt: center, segmentIndex: segments.length-1 });
+      pendingNodes=[];
     } else if (op.kind === "grid") {
       const pt = resolveCoordFull(op.coord, current);
       if (!pt) continue;
       if (!hasMove || !startOfPath) { errors.push({ message: "grid without start", line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "error" }); continue; }
       const a = startOfPath ?? current;
-      // Parse step from options (grid post-bracket or draw brackets)
-      let stepX = PT_PER_CM; // 1cm default
-      let stepY = PT_PER_CM;
+      let stepX = PT_PER_CM; let stepY = PT_PER_CM;
       let stepOpt = op.options.find(o => o.key.toLowerCase() === "step" || o.key.toLowerCase().includes("step"));
       if (!stepOpt) stepOpt = stmt.options.find(o => o.key.toLowerCase() === "step" || o.key.toLowerCase().includes("step"));
-      if (stepOpt) {
-        const v = stepOpt.value ?? stepOpt.key.split("=")[1];
-        if (v) {
-          // step may be "1cm" or "1cm,1cm"
-          if (v.includes(",")) {
-            const parts = v.split(",").map(s => s.trim());
-            try { stepX = parseDimension(parts[0]); } catch {}
-            try { stepY = parseDimension(parts[1] ?? parts[0]); } catch {}
-          } else {
-            try { const d = parseDimension(v.trim()); stepX = d; stepY = d; } catch {}
-          }
-        }
-      } else {
-        // Also support step as separate `xstep`/`ystep`? ignore
-      }
+      if (stepOpt) { const v = stepOpt.value ?? stepOpt.key.split("=")[1]; if (v) { if (v.includes(",")) { const parts = v.split(",").map(s => s.trim()); try { stepX = parseDimension(parts[0]); } catch {} try { stepY = parseDimension(parts[1] ?? parts[0]); } catch {} } else { try { const d = parseDimension(v.trim()); stepX = d; stepY = d; } catch {} } } }
       const gridSegs = gridSegments(a, pt, stepX, stepY);
-      for (const s of gridSegs) segments.push(s);
+      for (const ss of gridSegs) segments.push(ss);
       current = pt;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: a, endPt: pt, segmentIndex: segments.length-1 });
+      pendingNodes=[];
     } else if (op.kind === "orthV") {
       const pt = resolveCoordFull(op.coord, current);
       if (!pt) continue;
-      // |- : vertical then horizontal: (current.x, pt.y) then pt
       const mid = new Vec2(current.x, pt.y);
-      segments.push({ kind: "lineTo", to: mid });
-      segments.push({ kind: "lineTo", to: pt });
-      current = pt;
+      segments.push({ kind: "lineTo", to: mid }); segments.push({ kind: "lineTo", to: pt });
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: pt, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = pt;
     } else if (op.kind === "orthH") {
       const pt = resolveCoordFull(op.coord, current);
       if (!pt) continue;
-      // -| : horizontal then vertical: (pt.x, current.y) then pt
       const mid = new Vec2(pt.x, current.y);
-      segments.push({ kind: "lineTo", to: mid });
-      segments.push({ kind: "lineTo", to: pt });
-      current = pt;
+      segments.push({ kind: "lineTo", to: mid }); segments.push({ kind: "lineTo", to: pt });
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: pt, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = pt;
     } else if (op.kind === "controls") {
       const c1 = resolveCoordFull(op.cp1, current);
       const c2 = op.cp2 ? resolveCoordFull(op.cp2, current) : c1;
       const to = resolveCoordFull(op.to, current);
       if (!c1 || !c2 || !to) continue;
-      // For bezier, we already have current as start point; we need to ensure we have move if not
-      if (!hasMove) {
-        segments.push({ kind: "moveTo", to: current });
-        hasMove = true;
-        startOfPath = current;
-      }
+      if (!hasMove) { segments.push({ kind: "moveTo", to: current }); hasMove = true; startOfPath = current; }
       segments.push({ kind: "curveTo", cp1: c1, cp2: c2!, to });
-      current = to;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: to, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = to;
     } else if (op.kind === "arc") {
       if (!hasMove) { errors.push({ message: "arc without start", line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "error" }); continue; }
-      // Determine radii and angles
       let startA = op.startAngle ? evalMath(op.startAngle, { macros }) : 0;
       let endA = op.endAngle ? evalMath(op.endAngle, { macros }) : 90;
-      if (op.deltaAngle) {
-        const delta = evalMath(op.deltaAngle, { macros });
-        endA = startA + delta;
-      }
+      if (op.deltaAngle) { const delta = evalMath(op.deltaAngle, { macros }); endA = startA + delta; }
       let rx = 1 * PT_PER_CM, ry = 1 * PT_PER_CM;
       if (op.radius) try { rx = evaluateDimensionString(op.radius, macros); ry = rx; } catch {}
       else if (op.xRadius) try { rx = evaluateDimensionString(op.xRadius, macros); } catch {}
       if (op.yRadius) try { ry = evaluateDimensionString(op.yRadius, macros); } catch {}
       else if (op.xRadius && !op.yRadius) ry = rx;
-      // TikZ arc: start point is current; center is at current - vector(startA)*r
-      // Compute center so that arc starts at current
       const startRad = (startA * Math.PI) / 180;
       const center = new Vec2(current.x - rx * Math.cos(startRad), current.y - ry * Math.sin(startRad));
       const segs = arcSegments(center, rx, ry, startA, endA);
-      for (const s of segs) segments.push(s);
-      // Update current to arc end point
+      for (const ss of segs) segments.push(ss);
       const endRad = (endA * Math.PI) / 180;
-      current = new Vec2(center.x + rx * Math.cos(endRad), center.y + ry * Math.sin(endRad));
+      const endPt = new Vec2(center.x + rx * Math.cos(endRad), center.y + ry * Math.sin(endRad));
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = endPt;
     } else if (op.kind === "ellipse") {
       if (!hasMove) { errors.push({ message: "ellipse without center", line: op.loc.line, column: op.loc.column, pos: op.loc.pos, severity: "error" }); continue; }
       const center = current;
@@ -821,155 +814,179 @@ function evaluatePath(
       try { rx = evaluateDimensionString(op.xRadius, macros); } catch {}
       try { ry = evaluateDimensionString(op.yRadius, macros); } catch {}
       const segs = ellipseSegments(center, rx, ry);
-      for (const s of segs) segments.push(s);
+      for (const ss of segs) segments.push(ss);
       current = center;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: center, endPt: center, segmentIndex: segments.length-1 });
+      pendingNodes=[];
     } else if (op.kind === "parabola") {
       const to = resolveCoordFull(op.to, current);
       if (!to) continue;
       if (!hasMove) { segments.push({ kind: "moveTo", to: current }); hasMove = true; startOfPath = current; }
-      // Parabola from current to `to`, with bend point
       let bend: Vec2 | null = null;
       if (op.bend) bend = resolveCoordFull(op.bend, current);
-      // If bend provided, split into two parabolas? For simplicity, if bend, use bend as control
-      // Parabola is quadratic bezier; approximate with cubic: use bend as control
       if (bend) {
-        // Two segments: current -> bend and bend -> to
-        // Use quadratic to cubic conversion: for parabola y = a(x-h)^2 + k
-        // Simplify: use curveTo with control at bend
-        const mid = bend;
-        // First half: current to bend
-        const c1 = current.lerp(mid, 2/3);
-        const c2 = mid;
+        const mid = bend; const c1 = current.lerp(mid, 2/3); const c2 = mid;
         segments.push({ kind: "curveTo", cp1: c1, cp2: c2, to: mid });
-        const c3 = mid;
-        const c4 = mid.lerp(to, 1/3);
+        const c3 = mid; const c4 = mid.lerp(to, 1/3);
         segments.push({ kind: "curveTo", cp1: c3, cp2: c4, to });
       } else {
-        // No bend: parabola bend at current? Use mid with y = max
-        // Approximate with single cubic where control is midpoint lifted
-        const mx = (current.x + to.x) / 2;
-        const my = Math.max(current.y, to.y) + Math.abs(to.x - current.x) * 0.25;
+        const mx = (current.x + to.x) / 2; const my = Math.max(current.y, to.y) + Math.abs(to.x - current.x) * 0.25;
         const cp = new Vec2(mx, my);
         segments.push({ kind: "curveTo", cp1: current.lerp(cp, 0.5), cp2: cp.lerp(to, 0.5), to });
       }
-      current = to;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: to, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = to;
     } else if (op.kind === "sin") {
       const to = resolveCoordFull(op.to, current);
       if (!to) continue;
-      // sin from current to `to`: y = sin(x) scaled
-      // For simplicity, create a cubic that mimics sin
       const cp1 = new Vec2(current.x + (to.x - current.x) * 0.25, current.y);
       const cp2 = new Vec2(current.x + (to.x - current.x) * 0.75, to.y);
       segments.push({ kind: "curveTo", cp1, cp2, to });
-      current = to;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: to, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = to;
     } else if (op.kind === "cos") {
       const to = resolveCoordFull(op.to, current);
       if (!to) continue;
       const cp1 = new Vec2(current.x + (to.x - current.x) * 0.25, current.y);
       const cp2 = new Vec2(current.x + (to.x - current.x) * 0.75, to.y);
       segments.push({ kind: "curveTo", cp1, cp2, to });
-      current = to;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: to, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = to;
     } else if (op.kind === "to") {
       const to = resolveCoordFull(op.to, current);
       if (!to) continue;
-      // Parse to options: bend left/right, out/in, looseness
-      let bendAngle: number | null = null;
-      let looseness = 1;
-      let outAngle: number | null = null;
-      let inAngle: number | null = null;
-      let isRelative = false;
+      let bendAngle: number | null = null; let looseness = 1; let outAngle: number | null = null;
       for (const o of op.options) {
-        const k = o.key.trim().toLowerCase();
-        const v = (o.value ?? "").trim();
+        const k = o.key.trim().toLowerCase(); const v = (o.value ?? "").trim();
         if (k === "bend left" && !v) bendAngle = 30;
         else if (k === "bend left" && v) bendAngle = evalMath(v, { macros });
         else if (k === "bend right" && !v) bendAngle = -30;
         else if (k === "bend right" && v) bendAngle = -evalMath(v, { macros });
         else if (k === "looseness" && v) looseness = evalMath(v, { macros });
         else if (k === "out" && v) outAngle = evalMath(v, { macros });
-        else if (k === "in" && v) inAngle = evalMath(v, { macros });
-        else if (k === "relative" && v) isRelative = v.toLowerCase() === "true";
       }
-      if (bendAngle !== null || outAngle !== null || inAngle !== null) {
-        // Create a single cubic with bend
+      if (bendAngle !== null || outAngle !== null) {
         const dx = to.x - current.x, dy = to.y - current.y;
         const dist = Math.hypot(dx, dy);
         const mid = new Vec2((current.x + to.x) / 2, (current.y + to.y) / 2);
-        let angle = bendAngle ?? 0;
-        if (outAngle !== null) angle = outAngle; // simplified
+        let angle = bendAngle ?? 0; if (outAngle !== null) angle = outAngle;
         const offset = (dist * 0.3 * looseness) * Math.sin((angle * Math.PI) / 180);
-        // Compute perpendicular direction
         const perp = new Vec2(-dy, dx).norm().scale(offset);
         const cp = mid.add(perp);
-        // For single bend, use cp as both controls (quadratic to cubic approx)
         segments.push({ kind: "curveTo", cp1: current.lerp(cp, 0.5), cp2: cp.lerp(to, 0.5), to });
-      } else {
-        segments.push({ kind: "lineTo", to });
-      }
-      current = to;
+      } else { segments.push({ kind: "lineTo", to }); }
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: to, segmentIndex: segments.length-1 });
+      pendingNodes=[]; current = to;
     } else if (op.kind === "cycle") {
       segments.push({ kind: "close" });
       if (startOfPath) current = startOfPath;
+      for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: current, segmentIndex: segments.length-1 });
+      pendingNodes=[];
     }
   }
-
-  // Apply rounded corners post-processing if needed
+  for (const pn of pendingNodes) pathNodes.push({ spec: pn, startPt: current, endPt: current, segmentIndex: Math.max(0, segments.length-1) });
+  if (nodeEndpoints.length>=1 && segments.length>=2) {
+    const firstMoveIdx = segments.findIndex(s=>s.kind==="moveTo");
+    const lastLineIdx = (()=>{ for(let i=segments.length-1;i>=0;i--) if(segments[i].kind==="lineTo"||segments[i].kind==="curveTo") return i; return -1; })();
+    if (firstMoveIdx!==-1 && lastLineIdx!==-1) {
+      const first = segments[firstMoveIdx] as any;
+      const last = segments[lastLineIdx] as any;
+      const startNodeName = nodeEndpoints.find(e=>e.isStart)?.name;
+      const endNodeName = nodeEndpoints.find(e=>!e.isStart)?.name;
+      if (startNodeName && endNodeName) {
+        const sEntry = nodeEntries.get(startNodeName);
+        const eEntry = nodeEntries.get(endNodeName);
+        if (sEntry && eEntry) { const sBorder = getBorderPoint(sEntry, eEntry.center); const eBorder = getBorderPoint(eEntry, sEntry.center); first.to = sBorder; last.to = eBorder; }
+      } else if (startNodeName) {
+        const sEntry = nodeEntries.get(startNodeName);
+        if (sEntry && last) { const target = (last as any).to as Vec2; const nb = getBorderPoint(sEntry, target); first.to = nb; }
+      } else if (endNodeName) {
+        const eEntry = nodeEntries.get(endNodeName);
+        if (eEntry && first) { const src = (first as any).to as Vec2; const nb = getBorderPoint(eEntry, src); last.to = nb; }
+      }
+    }
+  }
   let finalSegments = segments;
-  if (roundedRadius !== null && roundedRadius > 0) {
-    finalSegments = applyRoundedCorners(segments, roundedRadius);
-  }
-
+  if (roundedRadius !== null && roundedRadius > 0) finalSegments = applyRoundedCorners(segments, roundedRadius);
   if (finalSegments.length === 0) return null;
-
-  const stroke = style.stroke;
-  const fill = style.fill;
+  const stroke = style.stroke; const fill = style.fill;
   const isClosed = finalSegments.some(s => s.kind === "close");
-  // Handle clip: if action is clip or option clip present, create clip group
   const hasClip = stmt.action === "clip" || stmt.options.some(o => o.key.toLowerCase() === "clip");
-  if (hasClip) {
-    const clipPath = finalSegments.filter(s => s.kind !== "close" || true); // keep all
-    const group: DisplayItem = { kind: "group", children: [], opacity: 1, clipPath };
-    // For \clip, the path itself is not drawn, just clip
-    return { item: group, extra: [] };
-  }
-  // For draw action: need stroke; for fill: fill; filldraw both; path neither? But we still render path if requested.
-  // In TikZ, \path with no draw/fill does nothing unless clip etc. We'll still treat as path with no stroke/fill unless options specify.
-  // Ensure that bare \draw without explicit draw= still draws with stroke.
-  let finalStroke = stroke;
-  let finalFill = fill;
+  if (hasClip) { const clipPath = finalSegments; const group: DisplayItem = { kind: "group", children: [], opacity: 1, clipPath }; return { item: group, extra: [], pathNodes: [], nodeItems: [] }; }
+  let finalStroke = stroke; let finalFill = fill;
   if (stmt.action === "draw" && !finalStroke) finalStroke = { ...DEFAULT_STROKE };
   if (stmt.action === "fill" && !finalFill) finalFill = { ...DEFAULT_FILL };
-  if (stmt.action === "filldraw") {
-    if (!finalStroke) finalStroke = { ...DEFAULT_STROKE };
-    if (!finalFill) finalFill = { ...DEFAULT_FILL };
-  }
-  if (stmt.action === "path" && !finalStroke && !finalFill) {
-    // Check if options requested draw/fill
-    // If none, path does nothing — still return empty? We'll return with null stroke/fill (invisible) but bbox still counts? For Phase1, keep as no-op but return segment for bbox anyway.
-  }
-
-  // Handle simple arrow heads as extra segments (Phase1 stub: add triangle at end for ->)
-  if (style.arrowEnd || style.arrowStart) {
-    // For simplicity, we don't draw arrow heads geometrically yet; we just extend stroke handling.
-    // We will add a tiny triangle path as a filled path item later. For now keep flag in stroke.
-    // Evaluator will generate arrow head geometry in items array: we push extra items.
-    // Instead, we will generate extra DisplayItem for arrow heads and return composite? For Phase1, we keep single item but mark.
-  }
-
+  if (stmt.action === "filldraw") { if (!finalStroke) finalStroke = { ...DEFAULT_STROKE }; if (!finalFill) finalFill = { ...DEFAULT_FILL }; }
   const item: DisplayItem = { kind: "path", segments: finalSegments, stroke: finalStroke, fill: finalFill, isClosed };
-
-  // Arrow heads as extra filled triangles
   const extra: DisplayItem[] = [];
-  if (style.arrowEnd && finalSegments.length >= 2) {
-    const head = createArrowHead(finalSegments, false);
-    if (head) extra.push(head);
+  if (style.arrowEnd && finalSegments.length >= 2) { const head = createArrowHead(finalSegments, false); if (head) extra.push(head); }
+  if (style.arrowStart && finalSegments.length >= 2) { const head = createArrowHead(finalSegments, true); if (head) extra.push(head); }
+  const evaluatedPathNodes: { entry: NodeEntry }[] = [];
+  const nodeItems: DisplayItem[] = [];
+  for (const pnInfo of pathNodes) {
+    const spec = pnInfo.spec;
+    const opts = ks.withEveryStyles(spec.options, "path");
+    const everyNode = ks.getStyle("every node");
+    let allOpts = opts;
+    if (everyNode) {
+      const enBody = ks.getStyle("every node");
+      if (enBody) {
+        const tmp = enBody.split(",").map(s=>s.trim()).filter(Boolean).map(raw=>{
+          const eq=raw.indexOf("=");
+          if(eq!==-1) return { raw, key: raw.slice(0,eq).trim(), value: raw.slice(eq+1).trim(), loc: spec.loc };
+          return { raw, key: raw, value: undefined, loc: spec.loc };
+        });
+        allOpts = [...tmp, ...allOpts];
+      }
+    }
+    const parsed = resolveNodeOptions(allOpts, macros, errors);
+    const engine = defaultEngine;
+    const text = spec.text ?? "";
+    const box = text ? await engine.measure(text, parsed.font, { textWidthPt: parsed.textWidthPt, align: parsed.align }) : { width:0, height:0, depth:0 };
+    const dims = computeNodeDimensions(box, { shape: parsed.shape, draw: parsed.draw, fill: parsed.fill, drawColor: parsed.drawColor, lineWidthPt: parsed.lineWidthPt, innerSepPt: parsed.innerSepPt, outerSepPt: parsed.outerSepPt, minimumWidthPt: parsed.minimumWidthPt, minimumHeightPt: parsed.minimumHeightPt, minimumSizePt: parsed.minimumSizePt, textWidthPt: parsed.textWidthPt, align: parsed.align, anchor: parsed.anchor, rotate: parsed.rotate, transformShape: parsed.transformShape, font: parsed.font, text, isCoordinate: parsed.isCoordinate, at: undefined, name: spec.name } as any);
+    const halfW = dims.halfW; const halfH = dims.halfH;
+    let t = 0.5;
+    for (const o of allOpts) {
+      const k = o.key.toLowerCase(); const v = (o.value ?? "").trim();
+      if (k==="pos" && v) { try{ t=evalMath(v,{macros}); }catch{} }
+      else if (k==="midway") t=0.5;
+      else if (k==="near start") t=0.25;
+      else if (k==="near end") t=0.75;
+      else if (k==="very near start") t=0.125;
+      else if (k==="very near end") t=0.875;
+      else if (k==="at start") t=0;
+      else if (k==="at end") t=1;
+    }
+    const rawJoined = allOpts.map(o=>o.raw).join(",");
+    if (rawJoined.includes("pos=")) {
+      const m = rawJoined.match(/pos\s*=\s*([0-9.]+)/);
+      if (m) t=parseFloat(m[1]);
+    }
+    const startPt = pnInfo.startPt ?? current;
+    const endPt = pnInfo.endPt ?? current;
+    let center = startPt.lerp(endPt, t);
+    for (const o of allOpts) {
+      const k=o.key.toLowerCase();
+      if (k==="above") center = center.add(new Vec2(0, 6));
+      else if (k==="below") center = center.add(new Vec2(0, -6));
+      else if (k==="left") center = center.add(new Vec2(-6,0));
+      else if (k==="right") center = center.add(new Vec2(6,0));
+    }
+    if (parsed.anchor && parsed.anchor!=="center") {
+      const dummy: NodeEntry = { name: spec.name, center, bbox: new BBox(), shape: parsed.shape, halfW, halfH, outerSep: parsed.outerSepPt, innerSep: parsed.innerSepPt, rotation: parsed.rotate, transformShape: parsed.transformShape, textBox: box, font: parsed.font, text, anchor: parsed.anchor };
+      const anchorPt = getAnchor(dummy, parsed.anchor);
+      const off = anchorPt.sub(center);
+      center = center.sub(off);
+    }
+    const shape = getShape(parsed.shape);
+    const bbox = shape.computeBBox(center, halfW, halfH, parsed.outerSepPt);
+    const entry: NodeEntry = { name: spec.name, center, bbox, shape: parsed.shape, halfW, halfH, outerSep: parsed.outerSepPt, innerSep: parsed.innerSepPt, rotation: parsed.rotate, transformShape: parsed.transformShape, textBox: box, font: { ...parsed.font, color: parsed.textColor ?? parsed.font.color }, text, anchor: parsed.anchor };
+    (entry as any)._fill = parsed.fill ? { color: parsed.fill, opacity: 1, rule: "nonzero" as const } : null;
+    (entry as any)._stroke = parsed.draw ? { color: parsed.drawColor ?? "#000000", widthPt: parsed.lineWidthPt, cap: "butt" as const, join: "miter" as const, miterLimit: 10, dash: null, dashPhasePt:0, opacity:1 } : null;
+    evaluatedPathNodes.push({ entry });
+    for (const d of nodeToDisplayItems(entry)) nodeItems.push(d);
   }
-  if (style.arrowStart && finalSegments.length >= 2) {
-    const head = createArrowHead(finalSegments, true);
-    if (head) extra.push(head);
-  }
-
-  return { item, extra };
+  return { item, extra, pathNodes: evaluatedPathNodes, nodeItems };
 }
 
 function resolveOptions(options: Option[], action: string, errors: EvalError[]): { stroke: StrokeStyle | null; fill: FillStyle | null; arrowStart: boolean; arrowEnd: boolean; inferredColor?: string } {
@@ -1222,6 +1239,7 @@ function resolveCoord(
   current: Vec2,
   transform: Affine = Affine.IDENTITY,
   macros: Map<string, string> = new Map(),
+  nodeEntries: Map<string, NodeEntry> = new Map(),
 ): Vec2 | null {
   let base: Vec2 | null = null;
   if (c.kind === "cartesian") {
@@ -1239,24 +1257,39 @@ function resolveCoord(
       base = new Vec2(r * Math.cos(rad), r * Math.sin(rad));
     } catch (e) { errors.push({ message: String((e as Error).message), line: c.loc.line, column: c.loc.column, pos: c.loc.pos, severity: "warning" }); return null; }
   } else if (c.kind === "named") {
-    const found = named.get(c.name);
-    if (!found) {
-      // Try to see if named is actually a math expression like "veclen(1,2)" — not a coordinate
-      // For Phase2, try to evaluate as math if it looks like function
-      if (/[()]/.test(c.name) || /[+\-*/]/.test(c.name)) {
-        try {
-          const v = evalMath(c.name, { macros });
-          base = new Vec2(v, 0);
-        } catch {
+    const entry = nodeEntries.get(c.name);
+    if (entry) {
+      if (c.anchor) {
+        // explicit anchor like A.north or A.30
+        const a = c.anchor.trim();
+        // angle anchor numeric or compass
+        if (/^-?[0-9.]+$/.test(a)) {
+          base = getAnchor(entry, a);
+        } else {
+          base = getAnchor(entry, a);
+        }
+      } else {
+        // shape-aware will be adjusted later at path level; for now return center
+        base = entry.center;
+      }
+    } else {
+      const found = named.get(c.name);
+      if (!found) {
+        if (/[()]/.test(c.name) || /[+\-*/]/.test(c.name)) {
+          try {
+            const v = evalMath(c.name, { macros });
+            base = new Vec2(v, 0);
+          } catch {
+            errors.push({ message: `Unknown named coordinate '${c.name}'`, line: c.loc.line, column: c.loc.column, pos: c.loc.pos, severity: "warning" });
+            base = new Vec2(0, 0);
+          }
+        } else {
           errors.push({ message: `Unknown named coordinate '${c.name}'`, line: c.loc.line, column: c.loc.column, pos: c.loc.pos, severity: "warning" });
           base = new Vec2(0, 0);
         }
       } else {
-        errors.push({ message: `Unknown named coordinate '${c.name}'`, line: c.loc.line, column: c.loc.column, pos: c.loc.pos, severity: "warning" });
-        base = new Vec2(0, 0);
+        base = found;
       }
-    } else {
-      base = found;
     }
   }
   if (!base) return null;
@@ -1268,6 +1301,474 @@ function resolveCoord(
   }
   // Apply coordinate transform (not canvas transform)
   return transform.apply(pt);
+}
+
+
+// ===== Phase 3 Node helpers =====
+
+function resolveNodeOptions(options: Option[], macros: Map<string,string>, errors: EvalError[]): {
+  shape: string;
+  draw: boolean;
+  fill: string | null;
+  drawColor: string | null;
+  lineWidthPt: number;
+  innerSepPt: number;
+  outerSepPt: number;
+  minimumWidthPt?: number;
+  minimumHeightPt?: number;
+  minimumSizePt?: number;
+  textWidthPt?: number;
+  align: string;
+  anchor: string;
+  rotate: number;
+  transformShape: boolean;
+  font: FontSpec;
+  isCoordinate: boolean;
+  positioning: { key: string; value: string }[];
+  labelOpts: Option[];
+  pinOpts: Option[];
+  textColor: string | null;
+} {
+  let shape = "rectangle";
+  let draw = false;
+  let fill: string | null = null;
+  let drawColor: string | null = null;
+  let lineWidthPt = 0.4;
+  let innerSepPt = 0.333 * 28.45275; // ~9.5pt? Actually 0.333em ~ 3.33pt; we'll use 3pt
+  innerSepPt = 3;
+  let outerSepPt = 0.5;
+  let minimumWidthPt: number|undefined;
+  let minimumHeightPt: number|undefined;
+  let minimumSizePt: number|undefined;
+  let textWidthPt: number|undefined;
+  let align = "center";
+  let anchor = "center";
+  let rotate = 0;
+  let transformShape = false;
+  let isCoordinate = false;
+  let font = defaultFont();
+  let textColor: string | null = null;
+  const positioning: { key:string; value:string }[] = [];
+  const labelOpts: Option[] = [];
+  const pinOpts: Option[] = [];
+
+  font = parseFontSpec(options, font);
+
+  for (const o of options) {
+    const raw = o.raw.trim();
+    const k = o.key.trim().toLowerCase();
+    const v = (o.value ?? "").trim();
+    // bare positioning as anchor shortcuts (above -> anchor south, etc.)
+    if (!v && ["above","below","left","right","above left","above right","below left","below right","center"].includes(k)) {
+      if (k==="above") anchor="south";
+      else if (k==="below") anchor="north";
+      else if (k==="left") anchor="east";
+      else if (k==="right") anchor="west";
+      else if (k==="above left") anchor="south east";
+      else if (k==="above right") anchor="south west";
+      else if (k==="below left") anchor="north east";
+      else if (k==="below right") anchor="north west";
+      continue;
+    }
+    if (["rectangle","circle","ellipse","coordinate"].includes(k) || ["rectangle","circle","ellipse","coordinate"].includes(raw.toLowerCase())) {
+      shape = k === "coordinate" || raw.toLowerCase()==="coordinate" ? "coordinate" : (["circle","ellipse","rectangle"].includes(k) ? k : (["circle","ellipse","rectangle"].includes(raw.toLowerCase()) ? raw.toLowerCase() : shape));
+      if (raw.toLowerCase()==="coordinate" || k==="coordinate") { isCoordinate=true; shape="coordinate"; }
+      continue;
+    }
+    if (k==="draw" && !v) { draw=true; continue; }
+    if (k==="draw" && v) { draw=true; const h=resolveColor(v); if(h) drawColor=h; continue; }
+    if (raw.toLowerCase()==="draw") { draw=true; continue; }
+    if (k==="fill" && v) { const h=resolveColor(v); if(h) fill=h; continue; }
+    if (k==="fill" && !v) { /* fill without value? */ continue; }
+    if (k==="line width" && v) { try{ lineWidthPt=parseDimension(v);}catch{ } continue; }
+    if (k==="inner sep" && v) { try{ innerSepPt=evaluateDimensionString(v, macros);}catch{ } continue; }
+    if (k==="outer sep" && v) { try{ outerSepPt=evaluateDimensionString(v, macros);}catch{ } continue; }
+    if (k==="minimum width" && v) { try{ minimumWidthPt=evaluateDimensionString(v, macros);}catch{ } continue; }
+    if (k==="minimum height" && v) { try{ minimumHeightPt=evaluateDimensionString(v, macros);}catch{ } continue; }
+    if (k==="minimum size" && v) { try{ minimumSizePt=evaluateDimensionString(v, macros);}catch{ } continue; }
+    if (k==="text width" && v) { try{ textWidthPt=evaluateDimensionString(v, macros);}catch{ } continue; }
+    if (k==="align" && v) { align=v.toLowerCase(); continue; }
+    if (k==="anchor" && v) { anchor=v; continue; }
+    if (k==="rotate" && v) { try{ rotate=evalMath(v,{macros});}catch{ } continue; }
+    if (k==="transform shape") { transformShape=true; continue; }
+    if (k==="text" && v) { const h=resolveColor(v); if(h) textColor=h; continue; }
+    if (k==="color" && v) { const h=resolveColor(v); if(h){ textColor=h; if(!drawColor) drawColor=h; } continue; }
+    // positioning
+    if (["above","below","left","right","above left","above right","below left","below right"].includes(k) || (k.startsWith("above")||k.startsWith("below")||k.startsWith("left")||k.startsWith("right"))) {
+      // For positioning lib, key may be "right" or "right=of a" value includes of...
+      // We'll store
+      positioning.push({ key:k, value: v });
+      continue;
+    }
+    if (k==="on grid") { /* ignore */ continue; }
+    if (k==="node distance" && v) { /* handled elsewhere */ continue; }
+    if (k==="label") { labelOpts.push(o); continue; }
+    if (k==="pin") { pinOpts.push(o); continue; }
+    if (k==="every label" || k==="every pin") { /* ignore */ continue; }
+    // sloped etc for path nodes
+    if (["sloped","allow upside down","swap","auto","pos","midway","near start","near end","very near start","very near end","at start","at end"].includes(k) || raw.toLowerCase().includes("pos")) {
+      continue;
+    }
+    // bare positioning like "right=of a" already captured
+    // also handle "above=2mm" etc by checking if raw contains " of "
+    if (raw.includes(" of ") || v.includes(" of ")) {
+      // likely positioning; treat entire raw as positioning?
+      // but we already captured via k check above; if not, push
+      // Heuristic: if raw matches positioning pattern, add
+      if (/^(above|below|left|right)/i.test(raw)) {
+        positioning.push({ key: raw.split("=")[0].trim().toLowerCase(), value: raw.split("=").slice(1).join("=").trim() });
+      }
+    }
+  }
+  // Also detect shape via options containing shape keywords as bare
+  for (const o of options) {
+    const raw=o.raw.toLowerCase().trim();
+    if (raw==="circle") shape="circle";
+    if (raw==="ellipse") shape="ellipse";
+    if (raw==="rectangle") shape="rectangle";
+    if (raw==="coordinate") { shape="coordinate"; isCoordinate=true; }
+  }
+  return { shape, draw, fill, drawColor, lineWidthPt, innerSepPt, outerSepPt, minimumWidthPt, minimumHeightPt, minimumSizePt, textWidthPt, align, anchor, rotate, transformShape, font, isCoordinate, positioning, labelOpts, pinOpts, textColor };
+}
+
+function nodeToDisplayItems(entry: NodeEntry): DisplayItem[] {
+  const items: DisplayItem[] = [];
+  const shape = getShape(entry.shape);
+  if (entry.shape !== "coordinate") {
+    // Background shape path
+    const bbox = entry.bbox;
+    const hw = entry.halfW, hh = entry.halfH;
+    const center = entry.center;
+    let segs: PathSegment[];
+    if (entry.shape === "circle") {
+      const r = Math.max(hw, hh);
+      segs = circleSegments(center, r);
+    } else if (entry.shape === "ellipse") {
+      segs = ellipseSegments(center, hw, hh);
+    } else {
+      // rectangle
+      segs = [
+        { kind: "moveTo", to: new Vec2(center.x - hw, center.y - hh) },
+        { kind: "lineTo", to: new Vec2(center.x + hw, center.y - hh) },
+        { kind: "lineTo", to: new Vec2(center.x + hw, center.y + hh) },
+        { kind: "lineTo", to: new Vec2(center.x - hw, center.y + hh) },
+        { kind: "close" },
+      ];
+    }
+    // Rotation: if needed and transformShape, we would rotate segments around center; simplified: ignore rotation geometry but apply for bbox
+    const stroke = entry.rotation !==0 && !entry.transformShape ? null : (entry as any)._stroke ?? null;
+    // Determine fill/stroke from entry._style stored? We'll store in entry as extra props via (entry as any)
+    const fill = (entry as any)._fill ?? null;
+    const strokeStyle = (entry as any)._stroke ?? null;
+    if (fill || strokeStyle) {
+      items.push({ kind: "path", segments: segs, stroke: strokeStyle, fill: fill ?? null, isClosed: true });
+    } else if (entry.text) {
+      // Still need at least bbox? If no draw/fill, only text
+    }
+  }
+  // Text item: will be rendered via TextEngine? For displayList we add a text item for measurement? But we will also have actual draw via canvas: we add a special path? For now add DisplayText for export
+  if (entry.text) {
+    // Determine text position: center?
+    // Need to handle alignment and text width already used for dimensions
+    items.push({
+      kind: "text",
+      text: entry.text,
+      at: entry.center,
+      font: `${entry.font.style} ${entry.font.weight} ${entry.font.sizePt}pt ${entry.font.family}`,
+      color: entry.font.color ?? "#000",
+      align: "center",
+      baseline: "middle",
+      widthPt: entry.textBox.width,
+      heightPt: entry.textBox.height,
+    });
+  }
+  return items;
+}
+
+async function evaluateNode(
+  stmt: import("../parser/index.ts").NodeStatement,
+  named: Map<string, Vec2>,
+  nodeEntries: Map<string, NodeEntry>,
+  macros: Map<string,string>,
+  transform: Affine,
+  errors: EvalError[],
+  ks: ReturnType<typeof getKeySystem>,
+): Promise<NodeEntry | null> {
+  const expanded = ks.withEveryStyles(stmt.options, "path");
+  // Also apply every node? For simplicity include "every node"
+  const everyNode = ks.getStyle("every node");
+  let allOpts = expanded;
+  if (everyNode) {
+    const enOpts = (ks as any).expandOptions ? (ks as any).expandOptions([]) : [];
+    // Actually get style string and parse
+    // Use internal: ks.withEveryStyles already handles every picture/path/scope, not every node. So manually expand every node
+    const enBody = ks.getStyle("every node");
+    if (enBody) {
+      // parse enBody into options
+      const tmp = enBody.split(",").map(s=>s.trim()).filter(Boolean).map(raw=>{
+        const eq=raw.indexOf("=");
+        if(eq!==-1) return { raw, key: raw.slice(0,eq).trim(), value: raw.slice(eq+1).trim(), loc: stmt.loc };
+        return { raw, key: raw, value: undefined, loc: stmt.loc };
+      });
+      allOpts = [...tmp, ...allOpts];
+    }
+  }
+  const parsed = resolveNodeOptions(allOpts, macros, errors);
+  const engine = defaultEngine;
+  const text = stmt.text ?? "";
+  // Measure text
+  const box = text ? await engine.measure(text, parsed.font, { textWidthPt: parsed.textWidthPt, align: parsed.align }) : { width:0, height:0, depth:0 };
+  // Compute dimensions
+  const { halfW, halfH } = computeNodeDimensions(box, { shape: parsed.shape, draw: parsed.draw, fill: parsed.fill, drawColor: parsed.drawColor, lineWidthPt: parsed.lineWidthPt, innerSepPt: parsed.innerSepPt, outerSepPt: parsed.outerSepPt, minimumWidthPt: parsed.minimumWidthPt, minimumHeightPt: parsed.minimumHeightPt, minimumSizePt: parsed.minimumSizePt, textWidthPt: parsed.textWidthPt, align: parsed.align, anchor: parsed.anchor, rotate: parsed.rotate, transformShape: parsed.transformShape, font: parsed.font, text, isCoordinate: parsed.isCoordinate, at: undefined, name: stmt.name } as any);
+  // Determine base position
+  let base: Vec2 | null = null;
+  if (stmt.at) {
+    base = resolveCoord(stmt.at, named, errors, new Vec2(0,0), transform, macros, nodeEntries);
+  }
+  // Positioning logic: handle right=of etc
+  let nodeDistancePt = PT_PER_CM; // 1cm default
+  // Check node distance option
+  for (const o of allOpts) if (o.key.toLowerCase()==="node distance" && o.value) { try{ nodeDistancePt = evaluateDimensionString(o.value, macros);}catch{} }
+  if (parsed.positioning.length>0) {
+    for (const p of parsed.positioning) {
+      const val = p.value;
+      // val like "of a" or "2cm of a" or "1cm of a.east"
+      let distStr: string | null = null;
+      let targetRaw: string | null = null;
+      if (val.includes(" of ")) {
+        const parts = val.split(" of ");
+        distStr = parts[0].trim();
+        targetRaw = parts[1].trim();
+        if (!distStr) distStr = null;
+        if (distStr && !/[0-9]/.test(distStr)) { // if distStr is not dimension, treat as missing
+          // Actually case "of a" => distStr is "" -> we already handle
+          targetRaw = val.slice(val.indexOf(" of ")+4).trim();
+          distStr = null;
+        }
+      } else if (val.startsWith("of ")) {
+        targetRaw = val.slice(3).trim();
+      } else {
+        // maybe value is like "2cm" without of - treat as offset? ignore
+        continue;
+      }
+      if (!targetRaw) continue;
+      // Parse targetRaw like "a", "a.east", "a.30"
+      let tName = targetRaw;
+      let tAnchor: string | undefined;
+      if (tName.includes(".")) {
+        const dot = tName.indexOf(".");
+        tAnchor = tName.slice(dot+1).trim();
+        tName = tName.slice(0,dot).trim();
+      }
+      const targetEntry = nodeEntries.get(tName);
+      const targetCenter = targetEntry ? (tAnchor ? getAnchor(targetEntry, tAnchor) : targetEntry.center) : (named.get(tName) ?? null);
+      if (!targetCenter) {
+        errors.push({ message: `Unknown positioning target '${tName}'`, line: stmt.loc.line, column: stmt.loc.column, pos: stmt.loc.pos, severity: "warning" });
+        continue;
+      }
+      // Compute offset distance
+      let dist = nodeDistancePt;
+      if (distStr) {
+        try{ dist = evaluateDimensionString(distStr, macros);}catch{}
+      }
+      // Direction from key like right, left, above, below etc
+      const dirKey = p.key.toLowerCase();
+      let offset = new Vec2(0,0);
+      if (dirKey.includes("right")) offset = new Vec2(dist,0);
+      else if (dirKey.includes("left")) offset = new Vec2(-dist,0);
+      else if (dirKey.includes("above")) offset = new Vec2(0,dist);
+      else if (dirKey.includes("below")) offset = new Vec2(0,-dist);
+      // For diagonal like "above right": combine
+      if (dirKey==="above right") offset = new Vec2(dist*Math.SQRT1_2, dist*Math.SQRT1_2);
+      if (dirKey==="above left") offset = new Vec2(-dist*Math.SQRT1_2, dist*Math.SQRT1_2);
+      if (dirKey==="below right") offset = new Vec2(dist*Math.SQRT1_2, -dist*Math.SQRT1_2);
+      if (dirKey==="below left") offset = new Vec2(-dist*Math.SQRT1_2, -dist*Math.SQRT1_2);
+
+      // Determine target point with outerSep consideration? Use target's border in direction
+      let targetPoint = targetCenter;
+      if (targetEntry && !tAnchor) {
+        // For positioning, TikZ touches outer sep: start from border of target in direction of offset, then add gap?
+        // Simplify: targetPoint is border of target in direction of offset plus offset? Actually spec: right=of A places new node's anchor (west) at distance from A's east.
+        // Our offset already is distance; we also need to offset by half widths + outer.
+        // Simpler: place new node's center = target border + offset + halfW
+        // Compute border of target in direction of offset
+        const dir = offset.norm();
+        const border = getBorderPoint(targetEntry, targetEntry.center.add(dir.scale(10)));
+        // Now targetPoint is border
+        targetPoint = border;
+        // Now base should be targetPoint plus offset in direction plus this node's half size in that direction
+        // But we don't know halfW yet? Already computed.
+        // We'll adjust after we compute desired anchor of new node.
+      }
+      // If base not already set, set to targetPoint + offset + node's anchor offset?
+      // For anchor handling: new node's anchor west should be at targetPoint+offset ?
+      // Simplify: compute desired center as targetPoint + offset + node's anchor compensation.
+      // For right=of, new node's west anchor at distance. So center = targetPoint + offset + (halfW,0)
+      let centerOffset = new Vec2(0,0);
+      if (dirKey.includes("right")) centerOffset = new Vec2(halfW, 0);
+      else if (dirKey.includes("left")) centerOffset = new Vec2(-halfW, 0);
+      else if (dirKey.includes("above")) centerOffset = new Vec2(0, halfH);
+      else if (dirKey.includes("below")) centerOffset = new Vec2(0, -halfH);
+      if (dirKey==="above right") centerOffset = new Vec2(halfW*Math.SQRT1_2, halfH*Math.SQRT1_2);
+      if (dirKey==="above left") centerOffset = new Vec2(-halfW*Math.SQRT1_2, halfH*Math.SQRT1_2);
+      if (dirKey==="below right") centerOffset = new Vec2(halfW*Math.SQRT1_2, -halfH*Math.SQRT1_2);
+      if (dirKey==="below left") centerOffset = new Vec2(-halfW*Math.SQRT1_2, -halfH*Math.SQRT1_2);
+      // If on grid, snap? Ignore
+
+      base = targetPoint.add(offset).add(centerOffset);
+      // For simple case where positioning overrides at, break after first
+      break;
+    }
+  }
+  if (!base) {
+    if (!stmt.at) {
+      base = new Vec2(0,0);
+    } else {
+      // already resolved stmt.at above
+    }
+  }
+  if (!base) base = new Vec2(0,0);
+  // Anchor adjustment: place node's anchor at base
+  let center = base;
+  if (parsed.anchor && parsed.anchor!=="center") {
+    const dummyEntry: NodeEntry = { name: stmt.name, center: base, bbox: new BBox(), shape: parsed.shape, halfW, halfH, outerSep: parsed.outerSepPt, innerSep: parsed.innerSepPt, rotation: parsed.rotate, transformShape: parsed.transformShape, textBox: box, font: parsed.font, text, anchor: parsed.anchor };
+    const anchorPt = getAnchor(dummyEntry, parsed.anchor);
+    const offset = anchorPt.sub(base); // vector from base to anchor (but base is anchor location, so we need center = base - offset)
+    center = base.sub(offset.sub(base).add(new Vec2(0,0))); // Actually anchorPt was computed with center=base, so offset = anchorPt - base
+    // So center = base - (anchorPt - base) = 2*base - anchorPt
+    const offset2 = anchorPt.sub(base);
+    center = base.sub(offset2);
+  }
+  // Compute bbox
+  const shape = getShape(parsed.shape);
+  const bbox = shape.computeBBox(center, halfW, halfH, parsed.outerSepPt);
+  // Expand bbox to include text? But shape bbox already includes text dims via halfW/halfH. Also add stroke width/2
+  // For bbox overall, include shape bbox
+  const entry: NodeEntry = {
+    name: stmt.name,
+    center,
+    bbox,
+    shape: parsed.shape,
+    halfW,
+    halfH,
+    outerSep: parsed.outerSepPt,
+    innerSep: parsed.innerSepPt,
+    rotation: parsed.rotate,
+    transformShape: parsed.transformShape,
+    textBox: box,
+    font: { ...parsed.font, color: parsed.textColor ?? parsed.font.color },
+    text,
+    anchor: parsed.anchor,
+  };
+  (entry as any)._fill = parsed.fill ? { color: parsed.fill, opacity: 1, rule: "nonzero" as const } : null;
+  (entry as any)._stroke = parsed.draw ? { color: parsed.drawColor ?? "#000000", widthPt: parsed.lineWidthPt, cap: "butt" as const, join: "miter" as const, miterLimit: 10, dash: null, dashPhasePt:0, opacity:1 } : null;
+  return entry;
+}
+
+async function handleLabels(
+  parent: NodeEntry,
+  options: Option[],
+  named: Map<string, Vec2>,
+  nodeEntries: Map<string, NodeEntry>,
+  macros: Map<string,string>,
+  transform: Affine,
+  errors: EvalError[],
+  ks: ReturnType<typeof getKeySystem>,
+): Promise<DisplayItem[]> {
+  const out: DisplayItem[] = [];
+  for (const o of options) {
+    if (o.key.toLowerCase()!=="label" && o.key.toLowerCase()!=="pin") continue;
+    const val = (o.value ?? "").trim();
+    if (!val) continue;
+    // Parse label value: may be like "[red]above:$x$" or "above:$x$" or "{\(x\)}"
+    // Extract options in []
+    let labelOpts: Option[] = [];
+    let rest = val;
+    if (rest.startsWith("[")) {
+      const close = rest.indexOf("]");
+      if (close!==-1) {
+        const inside = rest.slice(1, close);
+        // parse inside as comma options? simplified single
+        labelOpts.push({ raw: inside, key: inside, value: undefined, loc: o.loc });
+        rest = rest.slice(close+1).trim();
+        if (rest.startsWith(":")) rest = rest.slice(1).trim();
+      }
+    }
+    // Now rest like "above:$x$" or "30:$x$" or "$x$"
+    let angleStr: string | null = null;
+    let textStr = rest;
+    const colonIdx = rest.indexOf(":");
+    if (colonIdx!==-1) {
+      const before = rest.slice(0, colonIdx).trim();
+      // before may be angle or anchor
+      if (/^(above|below|left|right|center|north|south|east|west|[0-9.-]+)/i.test(before)) {
+        angleStr = before;
+        textStr = rest.slice(colonIdx+1).trim();
+      }
+    } else {
+      // No colon; maybe angle is implicit? default above
+      angleStr = "above";
+    }
+    if (textStr.startsWith("{") && textStr.endsWith("}")) textStr = textStr.slice(1,-1);
+    // Create small label node at parent anchor angle
+    const labelEntry: NodeEntry = {
+      name: undefined,
+      center: parent.center, // temporary
+      bbox: new BBox(),
+      shape: "rectangle",
+      halfW: 5,
+      halfH: 5,
+      outerSep: 1,
+      innerSep: 1,
+      rotation: 0,
+      transformShape: false,
+      textBox: { width: textStr.length*5, height:5, depth:2 },
+      font: parent.font,
+      text: textStr,
+      anchor: "center",
+    };
+    // Determine position: angleStr like "above" => 90deg, "below"=>270, "left"=>180, "right"=>0, or numeric 30
+    let angDeg = 90;
+    if (angleStr) {
+      const ll = angleStr.toLowerCase();
+      if (ll==="above") angDeg=90;
+      else if (ll==="below") angDeg=-90;
+      else if (ll==="left") angDeg=180;
+      else if (ll==="right") angDeg=0;
+      else if (ll==="above left") angDeg=135;
+      else if (ll==="above right") angDeg=45;
+      else if (ll==="below left") angDeg=225;
+      else if (ll==="below right") angDeg=315;
+      else if (!isNaN(parseFloat(ll))) angDeg=parseFloat(ll);
+    }
+    const rad = angDeg*Math.PI/180;
+    const dir = new Vec2(Math.cos(rad), Math.sin(rad));
+    const border = getBorderPoint(parent, parent.center.add(dir.scale(100)));
+    // Offset 0.2cm beyond border
+    const gap = 5; // pt ~ 0.18cm
+    const labelPos = border.add(dir.scale(gap));
+    // Measure label text
+    const engine = defaultEngine;
+    const tb = await engine.measure(textStr, parent.font, {});
+    const rh = tb.height+tb.depth+2;
+    const rw = tb.width+2;
+    const lbbox = new BBox(labelPos.x - rw/2, labelPos.y - rh/2, labelPos.x + rw/2, labelPos.y+rh/2);
+    labelEntry.center = labelPos;
+    labelEntry.bbox = lbbox;
+    labelEntry.halfW = rw/2;
+    labelEntry.halfH = rh/2;
+    labelEntry.textBox = tb;
+    labelEntry.text = textStr;
+
+    // pin: adds edge from parent border to label
+    if (o.key.toLowerCase()==="pin") {
+      // add line from parent border to label edge
+      const labelBorder = getBorderPoint(labelEntry, parent.center);
+      out.push({ kind:"path", segments: [{ kind:"moveTo", to: border }, { kind:"lineTo", to: labelBorder }], stroke: { color:"#000", widthPt:0.4, cap:"butt", join:"miter", miterLimit:10, dash:null, dashPhasePt:0, opacity:1 }, fill:null, isClosed:false });
+    }
+    for (const d of nodeToDisplayItems(labelEntry)) out.push(d);
+  }
+  return out;
 }
 
 export function parseDimension(s: string): number {

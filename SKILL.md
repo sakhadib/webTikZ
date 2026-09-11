@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.2.0 — **Phase 2 (Language Core)** complete — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~21.8 KB gz (Phase 2), IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/lexer/index.ts:1`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1`, `src/color/index.ts:1`, `src/math/index.ts:1`, `src/keys/index.ts:1`, `src/render/canvas.ts:1`
-> **Tests:** 212 pass (Phase 1: 30 + Phase 2: 151 + specific 5 + core 26) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.3.0 — **Phase 3 (Nodes & Text)** complete — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~28 KB gz (Phase 3, 91 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/lexer/index.ts:1`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1`, `src/color/index.ts:1`, `src/math/index.ts:1`, `src/keys/index.ts:1`, `src/text/index.ts:1`, `src/nodes/index.ts:1`, `src/shapes/index.ts:1`, `src/render/canvas.ts:1`
+> **Tests:** 266 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 2**. Anything tagged Phase 3+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 3**. Anything tagged Phase 4+ is *not yet implemented* and will error or be ignored.
 
 ---
 
@@ -283,7 +283,8 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 0 Groundwork | **Done 2026-09-11** | 6.8 KB gz | Vec2, Affine, BBox, DisplayList, Canvas2D, playground |
 | 1 MVP | **Done 2026-09-11** | 10.8 KB gz | 30/30 node-free examples, line:column frames |
 | 2 Language core | **Done 2026-09-11** | 21.8 KB gz | 151/150 +5 checks; keys, scopes, transforms, pgfmath, foreach, curves, clip |
-| 3 Nodes & text | TODO | < ? | TextEngine, nodes, anchors, positioning |
+| 3 Nodes & text | **Done 2026-09-11** | 28 KB gz | 53 tests; TextEngine, nodes, anchors, path nodes, positioning, labels/pins |
+| 4 Geometry & styling | TODO | < ? | calc, intersections, arrows.meta, shadings, patterns, bbox |
 | … | … | … | … |
 
 *Build:* `npm run build` → `dist/webtikz.js` (IIFE), `dist/webtikz.mjs` (ESM). Size budget enforced in CI — `plan.md:223`.
@@ -506,3 +507,135 @@ Implemented as two `lineTo` via `mid`.
 ---
 
 **For AI (updated for Phase 2):** When generating TikZ, first decide if the request fits **Phase 1 §4** alone or needs **Phase 2 §11**. Prefer Phase 2 features for expressive diagrams: use `\tikzset` styles for reuse, `scope` + transforms for layout, `pgfmath` for computed coords, `\foreach` for repetition, and `controls`/`arc`/`to` for curves. Always show `WebTikZ.compile` validation and `line:column` error handling. If the request needs nodes/text (Phase 3) or calc/intersections (Phase 4), state the limitation and offer a Phase 2 workaround (e.g., approximate with paths) rather than hallucinating.
+
+---
+
+## 12. Phase 3 — Nodes & Text — **NEW in 0.3.0**
+
+> **Scope:** `src/text/index.ts:1` (TextEngine), `src/shapes/index.ts:1`, `src/nodes/index.ts:1`, `src/parser/index.ts:1` (nodes), `src/core/evaluator.ts:1` (async evaluate), `src/api/compile.ts:1` (await)
+> **Tests:** 53 (`tests/unit/phase3.test.ts:1`) + 266 total — jsdom canvas fallback requires `canvas` npm for exact measure
+
+Phase 3 completes labeled diagrams — the most requested TikZ feature. AIs can now generate **flowcharts, graphs, and annotated figures** with measured text.
+
+### 12.1 TextEngine — `src/text/index.ts:1`
+
+Pluggable interface: `measure(tex, font) => Promise<TextBox {width,height,depth}>` and `draw(ctx, box, x, y)`.
+
+* **BuiltinTextEngine:** canvas `measureText` + `font` handling (`\tiny`→`12pt`, `\small`, `\large`…`\Huge` mapped to pt; `\bfseries`→700 weight, `\itshape`, `\sffamily`, `\ttfamily`). Requires `document.fonts.ready` before measure; falls back to estimation in jsdom (`Not implemented: getContext` warning is expected without `canvas` npm).
+* **Latin Modern:** recommended web font for ±3% LaTeX metric fidelity; fallback is system sans.
+* **Async:** `compile`/`render`/`evaluate` are now `async` — always `await WebTikZ.compile(src)`.
+* Adapters: `MathJaxAdapter` and overlay stub present (optional, not default).
+
+### 12.2 Multi-line Text — `src/text/index.ts:1`
+
+```tex
+\node[text width=3cm, align=center] at (0,0) {first line \\ second line};
+% align= left|center|right|justify|flush left|flush right — wraps at text width
+```
+
+Line width via `text width`, alignment, `\\` forced breaks; wrapping measured per TextEngine.
+
+### 12.3 Mini-TeX Math — `src/text/index.ts:1`
+
+Inside `$…$` or `\(…\)`: `^`/`_`, Greek (`\alpha`…`\Omega`), operators (`\pm`, `\times`), relations, arrows, `\frac{a}{b}`, `\sqrt{x}`, `\mathbf`, `\mathrm`, `\mathbb`, `\text{…}`, `\cdot`, `\ldots`, `\hat`, `\bar`, `\vec` — sized via TeX metrics approximations, not full TeX layout.
+
+```tex
+\node at (0,0) {$x_1$};
+\node at (1,0) {$\frac{a}{b} + \sqrt{x}$};
+\node at (0,1) {$\alpha \to \beta$};
+```
+
+Outside math, `_`/`^` are literal; inside math errors do not abort picture (partial render).
+
+### 12.4 Node Core — `src/parser/index.ts:1`, `src/nodes/index.ts:1`
+
+```tex
+\node[draw, fill=blue!20, circle, inner sep=2pt, minimum width=1cm] (a) at (0,0) {hello};
+\coordinate (c) at (1,1);
+\node[ellipse, draw] at (2,0) {Text};
+% on-path:
+\draw (0,0) -- node[above] {mid} (2,0);
+\draw (0,0) -- node[pos=0.3, sloped] {30%} (2,0);
+```
+
+* Shapes: `rectangle` (default), `circle`, `ellipse`, `coordinate` (zero-size).
+* Keys: `inner sep`, `outer sep`, `inner xsep/ysep`, `outer xsep/ysep`, `minimum width/height/size`, `text depth/height`, `text width`, `align`, `font=`, `draw`, `fill`.
+* Names: `(a)` optional; stored in `nodes` table as `NodeEntry {center,bbox,anchors}`.
+* `coordinate` is zero-size point (no draw/fill).
+* Draw order: node background (fill/draw) before text; path nodes after path (so text on top).
+
+### 12.5 Anchors — `src/shapes/index.ts:1`, `src/nodes/index.ts:1`
+
+Compass: `north`, `south`, `east`, `west`, `north east` (also `northEast`), `center`, `base`, `mid`, `text`; angle `(A.30)` at 30°; `anchor=` for placement.
+
+```tex
+\node (a) at (0,0) {A};
+\draw (a.north) -- (a.south);
+\draw (a.30) -- (a.210);
+\node[anchor=west] at (a.east) {right of A};
+% implicit via above/below/left/right
+\node[above=5mm of a] (b) {above};
+\node[above right=2mm and 3mm of a] (c) {diag};
+```
+
+Border point computed per shape (`rectangle` edge intersection, `circle`/`ellipse` radial). Explicit `(A.north)` bypasses shape-aware connection; implicit `(A) -- (B)` uses closest border points `src/core/evaluator.ts:1`.
+
+### 12.6 Nodes on Paths — `src/core/evaluator.ts:1`
+
+Position via Bézier parameter `t` on actual segment (arc-length later in Phase 4).
+
+```tex
+\draw (0,0) -- node[midway, above] {mid} (3,0);
+\draw (0,0) .. controls (1,1) .. (2,0) node[pos=0.5, sloped] {on curve} ;
+% pos aliases:
+% midway (=0.5), near start (=0.25), near end (=0.75), very near start/end, at start (=0), at end (=1)
+% sloped: rotate to tangent; allow upside down=false prevents 180° flip
+% auto, swap (other side)
+```
+
+### 12.7 Shape-aware Connections — `src/core/evaluator.ts:1`
+
+```tex
+\node[draw,circle] (a) at (0,0) {A};
+\node[draw,rectangle] (b) at (2,0) {B};
+\draw[->] (a) -- (b);          % attaches at circle border → rectangle border
+\draw[->] (a.east) -- (b.west); % explicit anchors, no auto-border
+```
+
+### 12.8 Labels & Pins — `src/core/evaluator.ts:1`
+
+```tex
+\node[label=above:hello] at (0,0) {A};
+\node[label={[red]45:label text}] at (0,0) {A};
+\node[pin=above:note] at (0,0) {A};
+\node[pin={[pin edge={red,thick}]60:edge}] at (0,0) {A};
+% every label/.style, every pin/.style, every pin edge/.style
+```
+
+Creates additional `NodeEntry` children with auto position relative to parent anchor.
+
+### 12.9 Positioning Library — `src/core/evaluator.ts:1`
+
+```tex
+\usetikzlibrary{positioning} % accepted (no-op, feature always on)
+\node (a) at (0,0) {A};
+\node[right=2cm of a] (b) {B};
+\node[below=of a] (c) {C};                    % default node distance=1cm
+\node[above=1cm of a.east, anchor=west] (d) {D};
+\node[on grid, right=2cm of a] (e) {E};      % on grid: center-to-center vs border-to-border
+\tikzset{node distance=1.5cm and 1cm}        % vertical and horizontal
+```
+
+`right=of a`, `below=1cm of a`, diagonal `above right=…`, `on grid` toggle; `node distance` as single or `x and y`.
+
+### 12.10 Rotate & Transform Shape — `src/nodes/index.ts:1`
+
+```tex
+\node[draw, rotate=30] at (0,0) {no shape rotate};
+\node[draw, rotate=30, transform shape] at (1,0) {rotated shape};
+% rotate only text, transform shape also rotates shape+bbox and border points
+```
+
+---
+
+**For AI (updated for Phase 3):** Prefer Phase 3 for any labeled diagram. Always `await` compile/render. Use `\node (name) at (coord) {tex}` with `draw`/`fill`/`circle`/`inner sep`/`minimum width` and `font=\small\bfseries`. Place labels via `label=`/`pin=` or `node[...] ` on paths with `pos`/`midway`/`sloped`. Connect via `(A) -- (B)` for border-aware edges; use `(A.east)` for explicit anchors. For positioning, use `right=of a` / `below=1cm of a.east` with `on grid` and `node distance`. Keep math to mini-TeX subset (`$x_1$`, `$\frac{a}{b}$`, Greek) — full AMS via MathJax adapter not default. If request needs `calc`/`intersections`/`arrows.meta` → state Phase 4 limit and approximate with explicit coords/border points.

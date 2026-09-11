@@ -37,7 +37,11 @@ export type PathOp =
   | { kind: "to"; to: Coordinate; options: Option[]; loc: Loc }
   | { kind: "pathNode"; node: PathNode; loc: Loc }
   | { kind: "let"; assignments: { p?: string; x?: string; y?: string; n?: string; expr: string; coord?: Coordinate }[]; loc: Loc }
+  | { kind: "pic"; name: string; options: Option[]; loc: Loc }
+  | { kind: "edge"; to: Coordinate; options: Option[]; loc: Loc }
+  | { kind: "plot"; options: Option[]; raw: string; loc: Loc }
   | { kind: "cycle"; loc: Loc }
+  | { kind: "pgf"; text: string; loc: Loc }
   | { kind: "raw"; text: string; loc: Loc };
 
 export type PathStatement = {
@@ -125,7 +129,11 @@ export type ForeachStatement = {
   loc: Loc;
 };
 
-export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement;
+export type PgfLayerStatement = { kind: "pgflayer"; name: string; loc: Loc };
+export type PgfDeclareLayerStatement = { kind: "pgfdeclarelayer"; name: string; loc: Loc };
+export type PgfSetLayersStatement = { kind: "pgfsetlayers"; names: string[]; loc: Loc };
+export type PgfBasicStatement = { kind: "pgf"; text: string; loc: Loc };
+export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement | PgfLayerStatement | PgfDeclareLayerStatement | PgfSetLayersStatement | PgfBasicStatement;
 
 export type Picture = {
   kind: "picture";
@@ -855,10 +863,98 @@ export function parse(source: string): ParseResult {
         ops.push({ kind:"let", assignments: assigns, loc: lloc });
         continue;
       }
+      // quotes: "label" as node shorthand (quotes library)
+      if (t.kind === "dquote") {
+        const loc = locFrom(consume());
+        let label = "";
+        while (peek() && peek()!.kind !== "dquote") label += consume()!.text;
+        if (peek()?.kind === "dquote") consume();
+        // treat as node with text=label
+        ops.push({ kind: "pathNode", node: { kind: "node", options: [], text: label, loc }, loc });
+        continue;
+      }
+      // pic operation
+      if (t.kind === "ident" && t.text.toLowerCase() === "pic") {
+        const loc = locFrom(consume());
+        let pOpts = parseBracketOptions();
+        // also handle quoted label like pic["label", draw]
+        // already handled via dquote? but bracket options already include quotes
+        let name = "";
+        if (peek()?.kind === "lbrace") {
+          name = parseBraceRaw() ?? "";
+        }
+        // If brace contains angle spec like "angle=A--B--C", keep as name
+        ops.push({ kind: "pic", name, options: pOpts, loc });
+        continue;
+      }
+      // edge operation
+      if (t.kind === "ident" && t.text.toLowerCase() === "edge") {
+        const loc = locFrom(consume());
+        let eOpts = parseBracketOptions();
+        // quotes after edge: edge ["label"]
+        if (peek()?.kind === "dquote") {
+          const qloc = locFrom(consume());
+          let qlabel = "";
+          while (peek() && peek()!.kind !== "dquote") qlabel += consume()!.text;
+          if (peek()?.kind === "dquote") consume();
+          eOpts.push({ raw: qlabel, key: qlabel, value: undefined, loc: qloc });
+        }
+        // optional node after edge?
+        if (peek()?.kind === "ident" && peek()!.text.toLowerCase() === "node") {
+          const nloc = locFrom(consume());
+          let nOpts = parseBracketOptions();
+          let nText = "";
+          if (peek()?.kind === "lbrace") nText = parseBraceRaw() ?? "";
+          eOpts.push({ raw: `edge-node:${nText}`, key: "edge-node", value: nText, loc: nloc });
+          void nOpts;
+        }
+        const coord = parseCoordinate();
+        if (!coord) { pushError("Expected coordinate after 'edge'", t); continue; }
+        ops.push({ kind: "edge", to: coord, options: eOpts, loc });
+        continue;
+      }
+      // plot operation
+      if (t.kind === "ident" && t.text.toLowerCase() === "plot") {
+        const loc = locFrom(consume());
+        let pOpts = parseBracketOptions();
+        // capture raw until next op or coord? Collect following tokens as raw
+        let raw = "";
+        // if next is coordinates or function spec
+        if (peek()?.kind === "ident" && ["coordinates","file","table"].includes(peek()!.text.toLowerCase())) {
+          raw += consume()!.text + " ";
+          if (peek()?.kind === "lbrace") raw += "{" + (parseBraceRaw() ?? "") + "}";
+          else if (peek()?.kind === "lparen") {
+            const c = parseCoordinate();
+            if (c) raw += `(${c.kind})`;
+          }
+        } else if (peek()?.kind === "lparen") {
+          // function plot like plot (\x,{sin(\x)})
+          // Capture coordinate-like
+          const c = parseCoordinate();
+          if (c) raw += `coord`;
+        } else if (peek()?.kind === "lbrace") {
+          raw += parseBraceRaw() ?? "";
+        }
+        // Also capture any following {...} that contains coordinates
+        if (peek()?.kind === "lbrace") raw += " " + (parseBraceRaw() ?? "");
+        // If next token is coordinates again after options
+        // Fallback: capture up to 200 chars raw from source via tokens
+        ops.push({ kind: "plot", options: pOpts, raw, loc });
+        continue;
+      }
+      // PGF basic layer inside path? e.g., \pgfpathmoveto
+      if (t.kind === "cs" && t.text.toLowerCase().startsWith("\\pgf")) {
+        const loc = locFrom(consume());
+        // capture following braced args as raw
+        let txt = t.text;
+        if (peek()?.kind === "lbrace") txt += "{" + (parseBraceRaw() ?? "") + "}";
+        ops.push({ kind: "pgf", text: txt, loc });
+        continue;
+      }
       // node on path — e.g., node[options] (name) {text}
       if (t.kind === "ident" && t.text.toLowerCase() === "node") {
         const loc = locFrom(consume());
-        // options may appear before or after name; handle bracket immediately after node
+        // handle quotes attached to node: node["label"]
         let nOpts = parseBracketOptions();
         let nName: string | undefined;
         // optional (name)
@@ -872,10 +968,14 @@ export function parse(source: string): ParseResult {
           const extra = parseBracketOptions();
           nOpts = [...nOpts, ...extra];
         }
-        // text in braces {text}
+        // text in braces {text} or quoted "text"
         let nText = "";
         if (peek()?.kind === "lbrace") {
           nText = parseBraceRaw() ?? "";
+        } else if (peek()?.kind === "dquote") {
+          consume();
+          while (peek() && peek()!.kind !== "dquote") nText += consume()!.text;
+          if (peek()?.kind === "dquote") consume();
         }
         ops.push({ kind: "pathNode", node: { kind: "node", options: nOpts, name: nName, text: nText, loc }, loc });
         continue;
@@ -1265,6 +1365,29 @@ export function parse(source: string): ParseResult {
                 }
               }
               return { kind: "scope", options: opts, body, loc };
+            } else if ((braceContent ?? "").trim() === "pgfonlayer") {
+              // Handle \begin{pgfonlayer}{name} — consume {pgfonlayer} then {name}
+              parseBraceRaw(); // consume {pgfonlayer}
+              let layerName = "";
+              if (peek()?.kind === "lbrace") layerName = parseBraceRaw() ?? "";
+              const loc = locFrom(beginTok);
+              const body: PictureBodyItem[] = [];
+              while (peek()) {
+                const tt = peek()!;
+                if (tt.kind === "cs" && tt.text === "\\end") {
+                  let kk = i + 1; let inner2 = "";
+                  while (kk < tokens.length && tokens[kk].kind !== "lbrace") kk++;
+                  if (kk < tokens.length) {
+                    let q = kk + 1; while (q < tokens.length && tokens[q].kind !== "rbrace") { inner2 += tokens[q].text; q++; }
+                    if (inner2.trim() === "pgfonlayer") { consume(); parseBraceRaw(); break; }
+                  }
+                }
+                const it2 = parseAnyStatementInPicture();
+                if (it2) body.push(it2);
+                else if (peek()?.kind === "lbrace") { const sc2 = parseBraceScope(); if (sc2) body.push(sc2); else consume(); }
+                else if (peek()) consume(); else break;
+              }
+              return { kind: "pgflayer", name: layerName.trim(), loc, body } as any;
             } else {
               // Not scope, rewind? It's tikzpicture already handled elsewhere, so treat as error
               i = startPos;
@@ -1277,10 +1400,82 @@ export function parse(source: string): ParseResult {
           }
           return null;
         }
+        case "\\pgfdeclarelayer": {
+          const loc = locFrom(consume()!);
+          const name = parseBraceRaw() ?? "";
+          return { kind: "pgfdeclarelayer", name: name.trim(), loc } as any;
+        }
+        case "\\pgfsetlayers": {
+          const loc = locFrom(consume()!);
+          const raw = parseBraceRaw() ?? "";
+          const names = raw.split(",").map(s=>s.trim()).filter(Boolean);
+          return { kind: "pgfsetlayers", names, loc } as any;
+        }
+        case "\\pgfpathmoveto":
+        case "\\pgfpathlineto":
+        case "\\pgfpathcurveto":
+        case "\\pgfpathclose":
+        case "\\pgfusepath":
+        case "\\pgfpoint":
+        case "\\pgfsetlinewidth":
+        case "\\pgfqpoint": {
+          const cs = consume()!;
+          const loc = locFrom(cs);
+          let txt = cs.text;
+          // capture up to ; or newline braced args
+          let buf = txt;
+          while (peek() && peek()!.kind !== "semi" && peek()!.kind !== "cs") {
+            if (peek()!.kind === "lbrace") buf += "{" + (parseBraceRaw() ?? "") + "}";
+            else buf += consume()!.text + " ";
+            if (peek()?.kind === "semi") break;
+          }
+          if (peek()?.kind === "semi") consume();
+          return { kind: "pgf", text: buf, loc } as any;
+        }
         case "\\end":
           // Should be handled by caller (scope/picture end)
+          // Check for pgfonlayer end
           return null;
         default:
+          // Handle \begin{pgfonlayer}{name}
+          if (t.text === "\\begin") {
+            // peek brace content for pgfonlayer
+            const beginTok = t;
+            // use helper: peek next brace content
+            let j = i + 1;
+            let braceContent = "";
+            while (j < tokens.length && tokens[j].kind !== "lbrace") j++;
+            if (j < tokens.length) {
+              let k = j + 1; let inner = "";
+              while (k < tokens.length && tokens[k].kind !== "rbrace") { inner += tokens[k].text; k++; }
+              braceContent = inner.trim();
+            }
+            if (braceContent === "pgfonlayer") {
+              consume(); // \begin
+              parseBraceRaw(); // {pgfonlayer}
+              let layerName = "";
+              if (peek()?.kind === "lbrace") layerName = parseBraceRaw() ?? "";
+              const loc = locFrom(beginTok);
+              // parse body until \end{pgfonlayer}
+              const body: PictureBodyItem[] = [];
+              while (peek()) {
+                const tt = peek()!;
+                if (tt.kind === "cs" && tt.text === "\\end") {
+                  let kk = i + 1; let inner2 = "";
+                  while (kk < tokens.length && tokens[kk].kind !== "lbrace") kk++;
+                  if (kk < tokens.length) {
+                    let q = kk + 1; while (q < tokens.length && tokens[q].kind !== "rbrace") { inner2 += tokens[q].text; q++; }
+                    if (inner2.trim() === "pgfonlayer") { consume(); parseBraceRaw(); break; }
+                  }
+                }
+                const it = parseAnyStatementInPicture();
+                if (it) body.push(it);
+                else if (peek()?.kind === "lbrace") { const sc = parseBraceScope(); if (sc) body.push(sc); else consume(); }
+                else if (peek()) consume(); else break;
+              }
+              return { kind: "pgflayer", name: layerName.trim(), loc, body } as any;
+            }
+          }
           // Unknown cs inside picture — treat as error but allow expander to handle (\def etc already covered)
           pushError(`Unknown command ${t.text} inside tikzpicture`, t);
           consume();
@@ -1584,6 +1779,12 @@ export function parse(source: string): ParseResult {
         // If body contains drawable, it will be handled when next picture is created
         continue;
       }
+    }
+    if (t.kind === "cs" && (t.text === "\\pgfdeclarelayer" || t.text === "\\pgfsetlayers" || t.text.startsWith("\\pgf"))) {
+      const item = parseAnyStatementInPicture();
+      if (item) pendingPreamble.push(item as any);
+      else consume();
+      continue;
     }
     if (t.kind === "cs" && t.text === "\\usetikzlibrary") {
       // skip \usetikzlibrary{...}

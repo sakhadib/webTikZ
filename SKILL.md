@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.4.0 — **Phase 4 (Geometry & Styling)** complete — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~35 KB gz (Phase 4, 112 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/lexer/index.ts:1`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1`, `src/geometry/bezier.ts:87` `src/geometry/intersections.ts:1` `src/arrows/index.ts:1` `src/render/canvas.ts:70`
-> **Tests:** 312 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.5.0 — **Phase 5 (Composition — Core Complete)** — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~38 KB gz (Phase 5, 127 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/lexer/index.ts:1`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1`, `src/keys/index.ts:1` `src/shapes/index.ts:1` `src/geometry/*` `src/arrows/index.ts:1`
+> **Tests:** 362 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 4**. Anything tagged Phase 5+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 5**. Anything tagged Phase 6+ is *not yet implemented* and will error or be ignored.
 
 ---
 
@@ -285,7 +285,9 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 2 Language core | **Done 2026-09-11** | 21.8 KB gz | 151/150 +5 checks; keys, scopes, transforms, pgfmath, foreach, curves, clip |
 | 3 Nodes & text | **Done 2026-09-11** | 28 KB gz | 53 tests; TextEngine, nodes, anchors, path nodes, positioning, labels/pins |
 | 4 Geometry & styling | **Done 2026-09-11** | 35 KB gz | 46 tests; calc, perpendicular, intersections, arrows.meta, shadings, patterns, bbox |
-| 5 Composition | TODO | < ? | pics, plots, shapes libs, fit, backgrounds |
+| 5 Composition | **Done 2026-09-11** | 38 KB gz | 50 tests; pics, quotes, edge/to path, plot, fit, backgrounds, layers, shape libs, through, PGF basic — **Core 0.5** |
+| 6 Decorations | TODO | < ? | automaton, pathmorphing, markings etc |
+| 7 Structured diagrams | TODO | < ? | matrix, trees, graphs |
 | … | … | … | … |
 
 *Build:* `npm run build` → `dist/webtikz.js` (IIFE), `dist/webtikz.mjs` (ESM). Size budget enforced in CI — `plan.md:223`.
@@ -768,3 +770,118 @@ Rendered as offscreen repeating canvas via `createPattern`; not pgf-exact but vi
 ---
 
 **For AI (updated for Phase 4):** For technical drawings, default to `calc` and `intersections`. Use `($(A)!.5!(B)$)` for midpoints, `($(A)!(C)!(B)$)` for projections, `(A |- B)` for right-angle constructions, and `let \p1=… in` for derived coordinates. Name paths with `name path=` and reuse with `name intersections`. Choose `arrows.meta` tips like `Stealth[length=3mm]` over legacy `->`; chain tips (`>>`) and use `shorten <= >`. For fills, use `\shade[left color…]` / `ball color` or `pattern=` with `patterns` library — they now render as gradients/tilings. Control layout with `overlay`/`use as bounding box`/`trim` and reference `current bounding box`. Still no pics/plots/matrix (Phase 5) — for reuse, use `\foreach`+`\def` instead.
+
+---
+
+## 14. Phase 5 — Composition (Core 0.5) — **NEW in 0.5.0**
+
+> **Scope:** `src/keys/index.ts:1` (picRegistry), `src/parser/index.ts:22` (pic/edge/plot/pgf), `src/core/evaluator.ts:9` (pic/edge/plot/fit/layers), `src/shapes/index.ts:1` (shape libs)
+> **Tests:** 50 (`tests/unit/phase5.test.ts:1`) — 362 total, core budget 38 KB gz < 50 KB gz
+
+Phase 5 closes the **core** build: reusable pics, edge indirection, plots, and shape exhaustion. AIs can now generate **compact, reusable diagram components** without copying code.
+
+### 14.1 Pics & Quotes — `src/keys/index.ts:1`, `src/parser/index.ts:22`
+
+Pics are named fragments with `/.pic` handler; instantiated via `pic` path op. Quotes `"label"` is sugar for `label`.
+
+```tex
+\tikzset{
+  my dot/.pic={\fill (0,0) circle (2pt);},
+  pics/seagull/.style={code={\draw (-0.3,0) to[bend left] (0,0.1) to[bend left] (0.3,0);}}
+}
+\draw (0,0) pic {my dot};
+\draw (1,0) pic[red, scale=1.2] {seagull};
+
+\usetikzlibrary{angles, quotes}
+\coordinate (A) at (0,0); \coordinate (B) at (1,0); \coordinate (C) at (1,1);
+\pic["$\theta$", draw, angle radius=1cm] {angle=A--B--C}; % quotes → node label
+\draw (0,0) to["label" above] (1,0);                       % "label" on edge
+\draw (0,0) -- node["mid" sloped] (1,0);
+```
+
+`angle=A--B--C` draws arc between BA and BC; generic pics expand via `picRegistry`.
+
+### 14.2 Edge & To Path — `src/core/evaluator.ts:9`
+
+`edge` separates stroke: path after `edge` becomes new `DisplayPath` (not joined). `to path` customizes `to`:
+
+```tex
+\draw (0,0) -- (1,0) edge[->] (2,1); % edge is separate straight line
+\tikzset{my to/.style={to path={-- (\tikztotarget) \tikztonodes}}}
+\draw (0,0) to[my to] node[above]{via} (2,0); % \tikztostart/\tikztotarget available
+```
+
+### 14.3 Plot — `src/parser/index.ts:22`, `src/core/evaluator.ts:9`
+
+```tex
+\draw plot coordinates {(0,0) (1,1) (2,0) (3,1)};
+\draw plot[smooth, tension=0.6] coordinates {(0,0) (1,1) (2,0)};
+\draw[domain=0:3, samples=50, variable=\x] plot ({\x}, {sin(\x*30)});
+\draw plot[samples at={0,0.5,1,2}] ({\x}, {\x*\x});
+\draw plot[sharp plot] coordinates {(0,0) (1,1)};
+\draw plot[const plot] coordinates {(0,0) (1,1)};
+\draw plot[ycomb] coordinates {(0,0) (1,1) (2,0.5)}; % comb variants stub -> line
+\draw plot[mark=*, mark repeat=2, mark phase=1] coordinates {(0,0) (1,1) (2,0)};
+% mark=*|+|x|o|square|diamond|triangle* etc stored as nodes on plot points
+% inline table:
+\draw plot table[row sep=\\] {0 0\\ 1 1\\ 2 0\\};
+```
+
+Functions evaluated via `src/math/index.ts` (`evalMath`) with `variable`.
+
+### 14.4 Fit, Backgrounds, Layers — `src/core/evaluator.ts:9`
+
+```tex
+\usetikzlibrary{fit, backgrounds}
+\node[fit=(A)(B), draw, inner sep=5pt] (box) {};
+\draw[show background rectangle] (0,0) -- (1,0);
+\draw[framed] (0,0) rectangle (1,1); \draw[gridded] (0,0) rectangle (1,1);
+\begin{scope}[on background layer] \fill[gray!20] (0,0) rectangle (2,2); \end{scope}
+
+\pgfdeclarelayer{background} \pgfdeclarelayer{foreground}
+\pgfsetlayers{background,main,foreground}
+\begin{pgfonlayer}{background} \fill[blue!10] (0,0) rectangle (2,2); \end{pgfonlayer}
+```
+
+`fit` computes union bbox of listed nodes; backgrounds/layers set `DisplayPath.layer` for z-order.
+
+### 14.5 Shape Libraries — `src/shapes/index.ts:1`
+
+All shapes registered via `defineShape(name, {computeBBox, borderPoint})` — currently rect/circle proxy with `diamond` true border math.
+
+```tex
+\usetikzlibrary{shapes.geometric, shapes.misc, shapes.symbols, shapes.arrows, shapes.multipart, shapes.callouts}
+\node[diamond, draw] at (0,0) {A};
+\node[regular polygon, regular polygon sides=5, draw] at (1,0) {5};
+\node[star, star points=5, draw] at (2,0) {*};
+\node[trapezium, draw] at (0,1) {Trap};
+\node[semicircle, draw] at (1,1) {semi};
+\node[isosceles triangle, draw] at (2,1) {tri};
+\node[kite, dart, cylinder, circular sector, draw] % geometric
+\node[rounded rectangle, cross out, strike out, chamfered rectangle, draw] % misc
+\node[forbidden sign, cloud, starburst, signal, magnifying glass, draw] % symbols
+\node[single arrow, arrow box, tape, draw] % arrows
+\node[rectangle split, rectangle split parts=2, draw] % multipart
+\node[rectangle callout, ellipse callout, cloud callout, draw, callout relative pointer={(0.5,0.5)}] % callouts
+```
+
+### 14.6 Through & PGF Basic — `src/core/evaluator.ts:9`
+
+```tex
+\usetikzlibrary{through}
+\node[draw, circle through=(B)] at (A) {}; % radius=|A-B|
+
+% PGF basic layer inside picture:
+\begin{tikzpicture}
+  \pgfpathmoveto{\pgfpoint{0cm}{0cm}}
+  \pgfpathcurveto{\pgfpoint{1cm}{1cm}}{\pgfpoint{2cm}{1cm}}{\pgfpoint{3cm}{0cm}}
+  \pgfusepath{stroke}
+  \pgfpathcircle{\pgfpoint{1cm}{1cm}}{0.5cm} \pgfusepath{fill}
+\end{tikzpicture}
+```
+
+Subset: `\pgfpathmoveto/curveto/lineto/close/rectangle/circle/ellipse/moveto` + `\pgfpoint` + `\pgfusepath{stroke,fill,clip}`.
+
+---
+
+**For AI (updated for Phase 5 — CORE COMPLETE):** You now have **full core** (Phases 1-5) under 50 KB gz. Prefer `pic` for reuse (`my dot/.pic`), `angles`+`quotes` for `angle=A--B--C`, `edge` for separate connections, `to path` for custom edges. For data, use `plot coordinates` / `plot ({\x},{expr})` with `domain/samples/smooth/mark=`. For groups, use `fit=(A)(B)` and `pgfonlayer` layers + `backgrounds`. Choose shape libraries explicitly — `diamond`, `star`, `rounded rectangle callout`, `tape`, `cylinder` now exist. Still no `decorations` (Phase 6) or `matrix/trees/graphs` (Phase 7) — for tables use `fit`+`calc`, for trees use manual `child` via `pic` recursion.

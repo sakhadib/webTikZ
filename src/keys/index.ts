@@ -30,6 +30,10 @@ function normalizeKey(raw: string): string {
   return k.toLowerCase();
 }
 
+export const picRegistry = new Map<string, string>(); // name -> body raw
+export function registerPic(name: string, body: string): void { picRegistry.set(name.toLowerCase(), body); }
+export function getPic(name: string): string | undefined { return picRegistry.get(name.toLowerCase()); }
+
 export class KeySystem {
   private store = new Map<string, KeyDef>();
   private styles = new Map<string, string[]>(); // key -> array of raw style bodies
@@ -253,6 +257,22 @@ export function handleTikzSet(arg: string, loc: { line: number; column: number; 
       const idx = entry.indexOf("/.is choice");
       const key = entry.slice(0, idx).trim();
       ks.defineChoice(key);
+      continue;
+    }
+    // Pic definitions: key/.pic={body}
+    if (entry.includes("/.pic")) {
+      const idx = entry.indexOf("/.pic");
+      const key = entry.slice(0, idx).trim();
+      const rest = entry.slice(idx + "/.pic".length).trim();
+      let body = "";
+      if (rest.startsWith("=")) body = rest.slice(1).trim();
+      if (body.startsWith("{") && body.endsWith("}")) body = body.slice(1, -1);
+      registerPic(key, body);
+      continue;
+    }
+    // to path and other .code usages ignored but not error
+    if (entry.includes("/.code") || entry.includes("to path")) {
+      // store as style for later use? keep raw
       continue;
     }
     // Fallback: treat as plain tikz key assignment that defines a style? No, ignore

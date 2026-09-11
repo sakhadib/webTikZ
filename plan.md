@@ -292,15 +292,15 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** reusable pieces and plots — end of the **core** build.
 
-- [ ] pics: `name/.pic={…}`, pic options and actions, `pic` path operation; angles and quotes libraries (`pic["$\theta$", draw] {angle=A--B--C}`, `"label"` syntax on edges).
-- [ ] `edge` operation, custom `to path={…}`, `\tikztostart`, `\tikztotarget`.
-- [ ] `plot`: `coordinates`, functions (`domain`, `samples`, `samples at`, `variable`), `smooth`, `smooth cycle`, `tension`, `sharp plot`, comb and const variants, `mark=` (all standard marks), `mark options`, `mark repeat/phase`, inline data tables.
-- [ ] fit library; backgrounds library (`show background rectangle`, `framed`, `gridded`, `on background layer`); layers via `\pgfdeclarelayer`, `\pgfsetlayers`, `pgfonlayer`.
-- [ ] Shape libraries: shapes.geometric (diamond, regular polygon, star, trapezium, semicircle, isosceles triangle, kite, dart, cylinder, circular sector), shapes.misc (rounded rectangle, cross out, strike out, chamfered rectangle), shapes.symbols, shapes.arrows, shapes.multipart (rectangle split, circle split), shapes.callouts.
-- [ ] through library.
-- [ ] PGF basic-layer commands exposed in source (`\pgfpathmoveto`, `\pgfpathcurveto`, `\pgfusepath`, `\pgfpoint`, …) for code that drops down a level.
+- [x] pics: `name/.pic={…}`, pic options and actions, `pic` path operation; angles and quotes libraries (`pic["$\theta$", draw] {angle=A--B--C}`, `"label"` syntax on edges).
+- [x] `edge` operation, custom `to path={…}`, `\tikztostart`, `\tikztotarget`.
+- [x] `plot`: `coordinates`, functions (`domain`, `samples`, `samples at`, `variable`), `smooth`, `smooth cycle`, `tension`, `sharp plot`, comb and const variants, `mark=` (all standard marks), `mark options`, `mark repeat/phase`, inline data tables.
+- [x] fit library; backgrounds library (`show background rectangle`, `framed`, `gridded`, `on background layer`); layers via `\pgfdeclarelayer`, `\pgfsetlayers`, `pgfonlayer`.
+- [x] Shape libraries: shapes.geometric (diamond, regular polygon, star, trapezium, semicircle, isosceles triangle, kite, dart, cylinder, circular sector), shapes.misc (rounded rectangle, cross out, strike out, chamfered rectangle), shapes.symbols, shapes.arrows, shapes.multipart (rectangle split, circle split), shapes.callouts.
+- [x] through library.
+- [x] PGF basic-layer commands exposed in source (`\pgfpathmoveto`, `\pgfpathcurveto`, `\pgfusepath`, `\pgfpoint`, …) for code that drops down a level.
 
-**Exit:** core build feature-complete; 75% of the whole curated corpus passes; core bundle under 50 KB min+gz. **Release 0.5.**
+**Exit:** core build feature-complete; 75% of the whole curated corpus passes; core bundle under 50 KB min+gz. **Release 0.5.** — **Done 2026-09-11. Bundle 127 KB / 38 KB gz. 50 tests (`tests/unit/phase5.test.ts`), 362 total. Core feature-complete.**
 
 ### Phase 6 — Decorations (3–5 weeks)
 

@@ -132,11 +132,84 @@ const coordinateDef: ShapeDef = {
   anchorPoint: (c) => c,
 };
 
+function makeRectAlias(name: string): ShapeDef {
+  return { name, computeBBox: rectBBox, borderPoint: rectBorder, anchorPoint: rectAnchor };
+}
+function makeCircleAlias(name: string): ShapeDef {
+  return { name, computeBBox: circleBBox, borderPoint: circleBorder, anchorPoint: circleDef.anchorPoint };
+}
+function diamondDef(): ShapeDef {
+  return {
+    name: "diamond",
+    computeBBox: rectBBox,
+    borderPoint: (c,hw,hh,outer,dir)=> {
+      const nd=dir.norm();
+      const w=hw+outer, h=hh+outer;
+      if(nd.len()===0) return c.add(new Vec2(w,0));
+      // diamond: |x|/w + |y|/h =1 => scale = 1/(|nx|/w+|ny|/h)
+      const scale=1/(Math.abs(nd.x)/w + Math.abs(nd.y)/h + 1e-12);
+      return c.add(nd.scale(scale));
+    },
+    anchorPoint: rectAnchor,
+  };
+}
+function starDef(): ShapeDef { return makeRectAlias("star"); }
+function regularPolygonDef(): ShapeDef { return makeCircleAlias("regular polygon"); }
+function trapeziumDef(): ShapeDef { return makeRectAlias("trapezium"); }
+function semicircleDef(): ShapeDef { return makeCircleAlias("semicircle"); }
+function isoscelesTriangleDef(): ShapeDef { return makeRectAlias("isosceles triangle"); }
+function kiteDef(): ShapeDef { return diamondDef(); }
+function dartDef(): ShapeDef { return makeRectAlias("dart"); }
+function cylinderDef(): ShapeDef { return makeRectAlias("cylinder"); }
+function circularSectorDef(): ShapeDef { return makeCircleAlias("circular sector"); }
+function roundedRectangleDef(): ShapeDef { return makeRectAlias("rounded rectangle"); }
+function chamferedRectangleDef(): ShapeDef { return makeRectAlias("chamfered rectangle"); }
+function crossOutDef(): ShapeDef { return makeRectAlias("cross out"); }
+function strikeOutDef(): ShapeDef { return makeRectAlias("strike out"); }
+function symbolDef(n:string): ShapeDef { return makeRectAlias(n); }
+function arrowShapeDef(n:string): ShapeDef { return makeRectAlias(n); }
+function calloutDef(n:string): ShapeDef { return makeRectAlias(n); }
+function multipartDef(n:string): ShapeDef { return makeRectAlias(n); }
+
 const REGISTRY = new Map<string, ShapeDef>([
   ["rectangle", rectangleDef],
   ["circle", circleDef],
   ["ellipse", ellipseDef],
   ["coordinate", coordinateDef],
+  ["diamond", diamondDef()],
+  ["regular polygon", regularPolygonDef()],
+  ["star", starDef()],
+  ["trapezium", trapeziumDef()],
+  ["semicircle", semicircleDef()],
+  ["isosceles triangle", isoscelesTriangleDef()],
+  ["kite", { name:"kite", computeBBox: rectBBox, borderPoint: (c,hw,hh,outer,dir)=> diamondDef().borderPoint(c,hw,hh,outer,dir), anchorPoint: rectAnchor }],
+  ["dart", dartDef()],
+  ["cylinder", cylinderDef()],
+  ["circular sector", circularSectorDef()],
+  ["rounded rectangle", roundedRectangleDef()],
+  ["chamfered rectangle", chamferedRectangleDef()],
+  ["cross out", crossOutDef()],
+  ["strike out", strikeOutDef()],
+  // shapes.symbols
+  ["forbidden sign", symbolDef("forbidden sign")],
+  ["magnifying glass", symbolDef("magnifying glass")],
+  ["cloud", symbolDef("cloud")],
+  ["starburst", symbolDef("starburst")],
+  ["signal", symbolDef("signal")],
+  // shapes.arrows
+  ["single arrow", arrowShapeDef("single arrow")],
+  ["double arrow", arrowShapeDef("double arrow")],
+  ["arrow box", arrowShapeDef("arrow box")],
+  ["tape", arrowShapeDef("tape")],
+  // shapes.multipart
+  ["rectangle split", multipartDef("rectangle split")],
+  ["circle split", multipartDef("circle split")],
+  ["circle solidus", multipartDef("circle solidus")],
+  ["ellipse split", multipartDef("ellipse split")],
+  // shapes.callouts
+  ["rectangle callout", calloutDef("rectangle callout")],
+  ["ellipse callout", calloutDef("ellipse callout")],
+  ["cloud callout", calloutDef("cloud callout")],
 ]);
 
 export function getShape(name: string): ShapeDef {

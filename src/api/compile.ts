@@ -4,6 +4,9 @@ import type { DisplayList } from "../render/displayList.ts";
 
 export interface CompileOptions {
   scale?: number;
+  vars?: Record<string, unknown>;
+  theme?: "light" | "dark" | string;
+  hoverStyles?: Record<string, string>;
 }
 
 export interface CompileResult {

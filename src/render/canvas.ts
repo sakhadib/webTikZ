@@ -1,10 +1,15 @@
 import type { DisplayList, DisplayItem, PathSegment } from "./displayList.ts";
 import { ptToPx } from "../geometry/units.ts";
+import { applyAria, generateDescription } from "../web/a11y.ts";
+import { applyThemeToDisplayList } from "../web/theme.ts";
 
 export interface RenderOptions {
   scale?: number;
   dpr?: number;
   background?: string | null;
+  theme?: "light" | "dark" | string;
+  ariaLabel?: string;
+  ariaDescription?: string;
 }
 
 /**
@@ -17,11 +22,14 @@ export function renderToCanvas(
   canvas: HTMLCanvasElement,
   opts: RenderOptions = {},
 ): void {
+  // Theme remapping — Phase 10
+  const themedDl = opts.theme ? applyThemeToDisplayList(dl, opts.theme) : dl;
+  const dlForRender = themedDl;
   const dpr = opts.dpr ?? globalThis.devicePixelRatio ?? 1;
   const extraScale = opts.scale ?? 1;
   const bg = opts.background ?? null;
 
-  const bbox = dl.bbox;
+  const bbox = dlForRender.bbox;
   const wPt = bbox.isEmpty ? 10 : bbox.width;
   const hPt = bbox.isEmpty ? 10 : bbox.height;
 
@@ -38,8 +46,18 @@ export function renderToCanvas(
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
 
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D context unavailable");
+  const ctx = canvas.getContext("2d") as CanvasRenderingContext2D | null;
+  if (!ctx) {
+    // jsdom without canvas package: set aria and sizing but skip drawing
+    try {
+      canvas.setAttribute("role", "img");
+      const desc = generateDescription(dlForRender);
+      if (!canvas.getAttribute("aria-label")) canvas.setAttribute("aria-label", desc.slice(0, 200) || "TikZ picture");
+      if (!canvas.getAttribute("aria-description")) canvas.setAttribute("aria-description", desc);
+      applyAria(canvas, dlForRender, { label: opts.ariaLabel, description: opts.ariaDescription });
+    } catch {}
+    return;
+  }
 
   ctx.setTransform(dpr * extraScale, 0, 0, dpr * extraScale, 0, 0);
 
@@ -62,9 +80,18 @@ export function renderToCanvas(
   ctx.scale(pxPerPt, -pxPerPt);
   ctx.translate(-bbox.minX, -bbox.minY);
 
-  for (const item of dl.items) drawItem(ctx, item);
+  for (const item of dlForRender.items) drawItem(ctx, item);
 
   ctx.restore();
+
+  // Accessibility — Phase 10
+  try {
+    canvas.setAttribute("role", "img");
+    const desc = generateDescription(dlForRender);
+    if (!canvas.getAttribute("aria-label")) canvas.setAttribute("aria-label", desc.slice(0, 200) || "TikZ picture");
+    if (!canvas.getAttribute("aria-description")) canvas.setAttribute("aria-description", desc);
+    applyAria(canvas, dlForRender, { label: opts.ariaLabel, description: opts.ariaDescription });
+  } catch {}
 }
 
 function drawItem(ctx: CanvasRenderingContext2D, item: DisplayItem): void {

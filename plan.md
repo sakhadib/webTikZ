@@ -356,15 +356,15 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** things TikZ can't do because it lives in PDF.
 
-- [ ] Interactivity: hit testing via the display list (`isPointInPath` / `isPointInStroke`), `pic.on(event, nodeName, fn)`, hover styles (`/web/hover/.style`), cursors, tooltips, `href` links.
-- [ ] Animation: time-bound variables (`\t`), `/web/animate` keys, a requestAnimationFrame loop, fast re-evaluation with a cached AST and cached text measurements.
-- [ ] Custom element `<tikz-picture>` with attributes, responsive `fit`, `ResizeObserver` support.
-- [ ] Theming and dark mode: map default black/white to CSS variables; optional color remapping.
-- [ ] Export: PNG at any scale, SVG via the SVG backend, PDF via SVG.
-- [ ] Accessibility: `role="img"`, `aria-label`, auto-generated description from node texts and edges.
-- [ ] Tooling: a syntax-highlighting grammar (TextMate/CodeMirror/Prism), playground with inline error markers, "copy as PNG/SVG," shareable URLs.
+- [x] Interactivity: hit testing via the display list (`isPointInPath` / `isPointInStroke`), `pic.on(event, nodeName, fn)`, hover styles (`/web/hover/.style`), cursors, tooltips, `href` links.
+- [x] Animation: time-bound variables (`\t`), `/web/animate` keys, a requestAnimationFrame loop, fast re-evaluation with a cached AST and cached text measurements.
+- [x] Custom element `<tikz-picture>` with attributes, responsive `fit`, `ResizeObserver` support.
+- [x] Theming and dark mode: map default black/white to CSS variables; optional color remapping.
+- [x] Export: PNG at any scale, SVG via the SVG backend, PDF via SVG.
+- [x] Accessibility: `role="img"`, `aria-label`, auto-generated description from node texts and edges.
+- [x] Tooling: a syntax-highlighting grammar (TextMate/CodeMirror/Prism), playground with inline error markers, "copy as PNG/SVG," shareable URLs.
 
-**Exit:** interactive and animated demo gallery; zero regressions on the fidelity suite.
+**Exit:** interactive and animated demo gallery; zero regressions on the fidelity suite. — **Done 2026-09-11. Bundle 203 KB / 61 KB gz. 43 tests (`tests/unit/phase10.test.ts`), 582 total. Phases 8-10 executed sequentially without prompt as requested.**
 
 ### Phase 11 — Hardening and 1.0 (3–4 weeks, then ongoing)
 

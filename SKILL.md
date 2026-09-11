@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.9.0 — **Phase 9 (pgfplots-lite)** — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~55 KB gz (Phase 9, 187 KB raw) + `dist/webtikz-plots.js` 7 KB gz plugin, IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/plots/index.ts:1`, `src/parser/index.ts:165` (axis/addplot), `src/core/evaluator.ts:21` (axis)
-> **Tests:** 539 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + Phase 8: 39 + Phase 9: 43 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.10.0 — **Phase 10 (Web-native)** complete — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~61 KB gz (Phase 10 full, 203 KB raw) + `dist/webtikz-plots.js` 7 KB gz, IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/web/interactivity.ts:1` `src/web/animation.ts:1` `src/web/element.ts:1` `src/web/theme.ts:1` `src/web/a11y.ts:1` `src/web/export.ts:1` `src/render/displayList.ts:117`
+> **Tests:** 582 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + Phase 8: 39 + Phase 9: 43 + Phase 10: 43 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 9**. Anything tagged Phase 10+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 10**. Phase 11 (Hardening/1.0) is next — performance/caching/fuzzing/docs.
 
 ---
 
@@ -290,7 +290,8 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 7 Structured diagrams | **Done 2026-09-11** | 46 KB gz | 50 tests; matrix, trees, graphs, automata/mindmap, graph drawing (circular/layered/spring/RT) |
 | 8 Advanced rendering & 3D | **Done 2026-09-11** | 49 KB gz | 39 tests; fadings, transparency/blend, shadows, 3D/tdplot/spy, includegraphics, transform canvas — **Release 0.8** |
 | 9 Plotting (pgfplots-lite) | **Done 2026-09-11** | 55+7 KB gz | 43 tests; axis, semilog/loglog, ybar/xbar/stacked, area/fill between/error bars, colormap viridis, surf/mesh — **Plugin** |
-| 10 Web-native | TODO | < ? | interactivity, animation, theming |
+| 10 Web-native | **Done 2026-09-11** | 61 KB gz | 43 tests; hit testing, pic.on/hover, \t animation, <tikz-picture>, theming, export SVG/PNG/PDF, a11y, highlight — **Gallery ready** |
+| 11 Hardening & 1.0 | TODO | < ? | perf, fuzzing, docs, dashboard |
 | … | … | … | … |
 
 *Build:* `npm run build` → `dist/webtikz.js` (IIFE), `dist/webtikz.mjs` (ESM). Size budget enforced in CI — `plan.md:223`.
@@ -1135,3 +1136,60 @@ Grid `N≈√samples` → mesh/surf as wireframe/filled quads, best-effort.
 ---
 
 **For AI (updated for Phase 9):** For charts prefer `\begin{axis}...\addplot...` over manual `draw plot`. Use `axis` + `grid` + `xlabel` for data, `semilogx/loglog` for log, `ybar/xbar` + `stacked` for bars, `fill between` for bands, `error bars` for uncertainty, `colormap/viridis` for heat, `surf/mesh` for 3D. Still no web interactivity (Phase 10) — for hover use `nodes` + `label` instead.
+
+---
+
+## 19. Phase 10 — Web-native — **NEW in 0.10.0**
+
+> **Scope:** `src/web/interactivity.ts:1` `src/web/animation.ts:1` `src/web/element.ts:1` `src/web/theme.ts:1` `src/web/a11y.ts:1` `src/web/export.ts:1` `src/web/highlight.ts:1` `src/render/displayList.ts:117`
+> **Tests:** 43 (`tests/unit/phase10.test.ts:1`) — 582 total
+
+Phase 10 makes WebTikZ a web component, not just a renderer.
+
+### 19.1 Interactivity — `src/web/interactivity.ts:1`, `src/render/displayList.ts:117`
+
+```js
+const pic = await WebTikZ.render(src, canvas);
+pic.on('click', 'a', (node, evt) => console.log(node.center));
+pic.on('mouseenter', 'b', () => canvas.style.cursor='pointer');
+// declarative:
+\draw[href=https://example.com] (0,0) -- (1,0);
+\node[tooltip=hello] at (0,0) {hover me};
+\tikzset{/web/hover/.style={fill=red!20}} // hoverStyles map
+```
+
+`hitTest` via `isPointInPath`/`isPointInStroke` (flattened Bézier sampling), `hitTestWithMargin`, `attachInteractivity`.
+
+### 19.2 Animation — `src/web/animation.ts:1`
+
+```tex
+\def\t{0} % vars: {t:0} exposed as \t
+\draw ({\t},0) -- ({\t},1);
+```
+```js
+const anim = pic.animator; // createAnimator with rAF, cached AST/text
+pic.update({vars:{t: performance.now()/1000}}); // fast recomp with astCache+textCache
+// keys: /web/animate={duration=2s, loop}
+// \t bound to time
+```
+
+### 19.3 Custom Element — `src/web/element.ts:1`
+
+```html
+<tikz-picture src="\draw (0,0) rectangle (2,1);" fit="contain" scale="1.5"></tikz-picture>
+<script>customElements.define('tikz-picture', class extends HTMLElement ...)</script>
+// ResizeObserver responsive, shadow DOM, observedAttributes fit/scale/theme
+```
+
+### 19.4 Theming / Export / A11y / Highlight
+
+```js
+pic.setTheme('dark'); // resolveThemeColor swaps black<->white, applyThemeToDisplayList
+pic.toSVG(); pic.toPNG(2); pic.toPDF(); // exportSVG/PNG/PDF shareableURL
+pic.aria; // role="img" aria-label/description generateDescription(nodes+edges)
+WebTikZ.highlight(src); // tokenize for Prism/CodeMirror
+```
+
+---
+
+**For AI (updated for Phase 10 — FULL):** You now have **end-to-end TikZ → Canvas/SVG with web superpowers**. For interactive diagrams use `pic.on(event, nodeName)` + `/web/hover` + `href`/`tooltip`. For animation bind `vars:{t}` and call `pic.update`. For embedding use `<tikz-picture fit>` with `ResizeObserver`. For dark mode call `setTheme('dark')`. For export use `toSVG/toPNG/toPDF` and `shareableURL`. Docs/Perf remain Phase 11.

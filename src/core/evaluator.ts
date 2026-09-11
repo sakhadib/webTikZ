@@ -41,7 +41,7 @@ function project3D(x: number, y: number, z: number): Vec2 {
   return new Vec2(px, py);
 }
 
-export interface EvalOptions { scale?: number; }
+export interface EvalOptions { scale?: number; vars?: Record<string, unknown>; theme?: string; }
 export interface EvalError { message: string; line: number; column: number; pos: number; severity: "error" | "warning"; codeFrame?: string; }
 
 export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Promise<{ displayList: DisplayList; errors: EvalError[] }> {
@@ -53,6 +53,17 @@ export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Pr
   const named = new Map<string, Vec2>();
   const globalNodeEntries = new Map<string, NodeEntry>();
   const macros = new Map<string, string>();
+  // inject vars as \t etc — Phase 10 animation
+  if (_opts.vars) {
+    for (const [k, v] of Object.entries(_opts.vars)) {
+      const str = String(v);
+      const bare = k.replace(/^\\/, "");
+      macros.set(bare, str);
+      macros.set("\\" + bare, str);
+      // also allow \t special
+      if (bare === "t") { macros.set("t", str); macros.set("\\t", str); }
+    }
+  }
   const namedPaths = new Map<string, PathSegment[]>();
   // Fresh KeySystem per compile to avoid cross-test pollution, but preserve base styles
   // For now, we keep singleton but ensure every picture styles from previous compiles don't leak

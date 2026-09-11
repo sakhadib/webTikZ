@@ -5,6 +5,15 @@ import { renderToSVG } from "./render/svg.ts";
 import { lex } from "./lexer/index.ts";
 import { parse } from "./parser/index.ts";
 
+import { defineTikzPictureElement } from "./web/element.ts";
+import { hitTestDisplayList, isPointInPath, isPointInStroke, hitTestNodes } from "./render/displayList.ts";
+import * as theme from "./web/theme.ts";
+import * as a11y from "./web/a11y.ts";
+import * as anim from "./web/animation.ts";
+import * as inter from "./web/interactivity.ts";
+import * as exp from "./web/export.ts";
+import * as hl from "./web/highlight.ts";
+
 export const WebTikZ = {
   version: "0.0.1",
   compile,
@@ -14,6 +23,17 @@ export const WebTikZ = {
   renderToSVG,
   lex,
   parse,
+  hitTest: hitTestNodes,
+  hitTestDisplayList,
+  isPointInPath,
+  isPointInStroke,
+  theme,
+  a11y,
+  anim,
+  inter,
+  exp,
+  hl,
+  defineTikzPictureElement,
   // plugin registry stub
   _plugins: [] as unknown[],
   use(plugin: unknown) {

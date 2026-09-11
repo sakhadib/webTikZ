@@ -1,9 +1,13 @@
 import type { DisplayList, DisplayItem, PathSegment } from "./displayList.ts";
 import { ptToPx } from "../geometry/units.ts";
+import { applyThemeToDisplayList } from "../web/theme.ts";
 
 export interface SvgOptions {
   scale?: number;
   background?: string | null;
+  theme?: "light" | "dark" | string;
+  ariaLabel?: string;
+  ariaDescription?: string;
 }
 
 function esc(s: string): string {
@@ -56,15 +60,20 @@ function itemToSvg(item: DisplayItem): string {
 }
 
 export function renderToSVG(dl: DisplayList, opts: SvgOptions = {}): string {
+  // theme and aria Phase 10
+  let dlForSvg = dl;
+  if (opts.theme) {
+    try { dlForSvg = applyThemeToDisplayList(dl, opts.theme as any); } catch {}
+  }
   const scale = opts.scale ?? 1;
-  const bbox = dl.bbox;
+  const bbox = dlForSvg.bbox;
   const padPt = 0.5;
   const wPt = (bbox.isEmpty ? 10 : bbox.width) + padPt * 2;
   const hPt = (bbox.isEmpty ? 10 : bbox.height) + padPt * 2;
   const wPx = ptToPx(wPt) * scale;
   const hPx = ptToPx(hPt) * scale;
 
-  const inner = dl.items.map(itemToSvg).join("\n");
+  const inner = dlForSvg.items.map(itemToSvg).join("\n");
 
   // Flip Y: translate to bottom then scale Y -1, then translate bbox
   const pxPerPt = ptToPx(1);
@@ -73,8 +82,10 @@ export function renderToSVG(dl: DisplayList, opts: SvgOptions = {}): string {
   const tx = -bbox.minX + padPt;
   const ty = -bbox.minY + padPt;
 
+  const ariaLabel = esc(opts.ariaLabel ?? `TikZ picture ${dlForSvg.items.length} items`);
+  const ariaDesc = esc(opts.ariaDescription ?? `TikZ diagram with ${Object.keys(dlForSvg.nodes).length} nodes`);
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${wPx}" height="${hPx}" viewBox="0 0 ${wPx} ${hPx}" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="${wPx}" height="${hPx}" viewBox="0 0 ${wPx} ${hPx}" role="img" aria-label="${ariaLabel}" aria-description="${ariaDesc}">
 ${opts.background ? `<rect width="100%" height="100%" fill="${esc(opts.background)}"/>` : ""}
 <g transform="translate(0,${hPx}) scale(${pxPerPt * scale},${-pxPerPt * scale}) translate(${tx},${ty})">
 ${inner}

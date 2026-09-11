@@ -19,6 +19,8 @@ import { getDecoration, defaultCommon } from "../decorations/index.ts";
 import type { DecorationCommon } from "../decorations/index.ts";
 import { layoutForOptions, circularLayout, layeredLayout, springLayout, treeLayout } from "../graphDrawing/index.ts";
 import { lex } from "../lexer/index.ts";
+import { parseAxisConfig, generateAxisItems } from "../plots/index.ts";
+import type { AxisStatement, AddPlotStatement } from "../parser/index.ts";
 
 export const fadingRegistry = new Map<string, string>();
 export let tdplotTheta = 26.565;
@@ -309,6 +311,35 @@ async function evaluatePicture(
       const g = await evaluateGraph(stmt as any, localNamed, nodeEntries, localMacros, transform, errors, ks);
       for(const d of g.items) items.push(d);
       for(const e of g.entries) { nodeEntries.set(e.name!, e); localNamed.set(e.name!, e.center); globalNamed.set(e.name!, e.center); nodes[e.name!] = { center:e.center, bbox:e.bbox }; }
+    } else if ((stmt as any).kind === "axis") {
+      const axis = stmt as unknown as AxisStatement;
+      const cfg = parseAxisConfig(axis.options, axis.envName, localMacros);
+      const plotSpecs: any[] = [];
+      const legendEntries: string[]=[];
+      for(const b of (axis.body as any[])){
+        if(b.kind==="addplot") plotSpecs.push({ options: b.options, raw: b.raw, dataKind: b.dataKind, expr: b.expr, pointsRaw: b.pointsRaw, tableRaw: b.tableRaw, tableOptions: b.tableOptions });
+        else if(b.kind==="addlegendentry") legendEntries.push(b.text);
+        else if(b.kind==="legend") for(const e of b.entries) legendEntries.push(e);
+        else if(b.kind==="path" || b.kind==="node" || b.kind==="coordinate"){
+          // fallback: evaluate as normal inside axis coordinate system? For now push as is with axis transform
+          // We'll evaluate using same evalBodyItem but with axis scaling? Simplified ignore
+        }
+      }
+      const axisItems = generateAxisItems(cfg, plotSpecs, legendEntries, { transform, canvasTransform, macros: localMacros, errors });
+      for(const ai of axisItems){
+        if(canvasTransform && !canvasTransform.isIdentity()) (ai as any).canvasTransform = canvasTransform;
+        items.push(ai);
+      }
+      // axis bbox participants? Ensure overall bbox includes axis
+      // nodes for axis center? Not needed
+    } else if ((stmt as any).kind === "addplot") {
+      // Standalone addplot outside axis -> treat as simple plot without axis box (linear 0-1)
+      const ap = stmt as unknown as AddPlotStatement;
+      const cfg = parseAxisConfig([], "axis", localMacros);
+      const axisItems = generateAxisItems(cfg, [{ options: ap.options, raw: ap.raw, dataKind: ap.dataKind, expr: ap.expr, pointsRaw: ap.pointsRaw, tableRaw: ap.tableRaw } as any], [], { transform, canvasTransform, macros: localMacros, errors });
+      for(const ai of axisItems) items.push(ai);
+    } else if ((stmt as any).kind === "addlegendentry" || (stmt as any).kind === "legend") {
+      // ignore outside axis
     } else if (stmt.kind === "path") {
       const expandedOpts = ks.withEveryStyles(stmt.options, "path");
       // Phase4: handle name intersections as a special path that may not draw
@@ -521,6 +552,22 @@ async function evaluatePicture(
           } else if (inner.kind === "foreach") {
             const foreachItems = await evaluateForeach(inner, localNamed, localMacros, curTransform, curCanvasTransform, errors, nodeEntries);
             for (const fi of foreachItems) scopeItems.push(fi);
+          } else if ((inner as any).kind === "axis") {
+            const axis = inner as unknown as AxisStatement;
+            const cfg = parseAxisConfig(axis.options, axis.envName, localMacros);
+            const plotSpecs: any[]=[]; const legendEntries: string[]=[];
+            for(const b of (axis.body as any[])){
+              if(b.kind==="addplot") plotSpecs.push({ options:b.options, raw:b.raw, dataKind:b.dataKind, expr:b.expr, pointsRaw:b.pointsRaw, tableRaw:b.tableRaw, tableOptions:b.tableOptions });
+              else if(b.kind==="addlegendentry") legendEntries.push(b.text);
+              else if(b.kind==="legend") for(const e of b.entries) legendEntries.push(e);
+            }
+            const axisItems = generateAxisItems(cfg, plotSpecs, legendEntries, { transform: curTransform, canvasTransform: curCanvasTransform, macros: localMacros, errors });
+            for(const ai of axisItems) scopeItems.push(ai);
+          } else if ((inner as any).kind === "addplot") {
+            const ap = inner as unknown as AddPlotStatement;
+            const cfg = parseAxisConfig([], "axis", localMacros);
+            const axisItems = generateAxisItems(cfg, [{ options: ap.options, raw: ap.raw, dataKind: ap.dataKind, expr: ap.expr, pointsRaw: ap.pointsRaw, tableRaw: ap.tableRaw } as any], [], { transform: curTransform, canvasTransform: curCanvasTransform, macros: localMacros, errors });
+            for(const ai of axisItems) scopeItems.push(ai);
           }
         }
       }

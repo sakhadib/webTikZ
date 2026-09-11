@@ -163,7 +163,11 @@ export type PgfBasicStatement = { kind: "pgf"; text: string; loc: Loc };
 export type TikzFadingStatement = { kind: "tikzfading"; name: string; arg: string; loc: Loc };
 export type TdplotStatement = { kind: "tdplotsetmaincoords"; theta: string; phi: string; loc: Loc };
 export type SpyStatement = { kind: "spy"; options: Option[]; raw: string; loc: Loc };
-export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement | PgfLayerStatement | PgfDeclareLayerStatement | PgfSetLayersStatement | PgfBasicStatement | MatrixStatement | GraphStatement | TikzFadingStatement | TdplotStatement | SpyStatement;
+export type AddPlotStatement = { kind: "addplot"; options: Option[]; raw: string; dataKind: "expression"|"coordinates"|"table"|"unknown"; expr?: string; pointsRaw?: string; tableRaw?: string; tableOptions?: string; loc: Loc };
+export type AddLegendEntryStatement = { kind: "addlegendentry"; text: string; loc: Loc };
+export type LegendStatement = { kind: "legend"; entries: string[]; loc: Loc };
+export type AxisStatement = { kind: "axis"; envName: string; options: Option[]; body: (AddPlotStatement|AddLegendEntryStatement|LegendStatement|PictureBodyItem)[]; loc: Loc };
+export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement | PgfLayerStatement | PgfDeclareLayerStatement | PgfSetLayersStatement | PgfBasicStatement | MatrixStatement | GraphStatement | TikzFadingStatement | TdplotStatement | SpyStatement | AxisStatement | AddPlotStatement | AddLegendEntryStatement | LegendStatement;
 
 export type Picture = {
   kind: "picture";
@@ -1442,9 +1446,142 @@ export function parse(source: string): ParseResult {
     return res;
   }
 
+  // Helpers for Phase9 axis
+  function isAxisEnv(name: string): boolean {
+    const n=name.toLowerCase().trim();
+    return n==="axis" || n==="semilogxaxis" || n==="semilogyaxis" || n==="loglogaxis" || n==="semilogx axis" || n==="semilogy axis" || n==="loglog axis";
+  }
+  function parseAddPlotStatement(cs: Token): AddPlotStatement | null {
+    const loc = locFrom(cs);
+    // handle plus suffix? e.g., \addplot+ -> consume plus if present
+    if (peek()?.kind==="plus") consume();
+    // also handle 3: \addplot3? already in cs text
+    let opts: Option[] = [];
+    if (peek()?.kind==="lbracket") opts = parseBracketOptions();
+    // capture data
+    let raw = "";
+    let dataKind: AddPlotStatement["dataKind"]="unknown";
+    let expr: string|undefined;
+    let pointsRaw: string|undefined;
+    let tableRaw: string|undefined;
+    let tableOptions: string|undefined;
+    const nxt=peek();
+    if (nxt?.kind==="ident" && nxt.text.toLowerCase()==="coordinates") {
+      consume();
+      dataKind="coordinates";
+      if (peek()?.kind==="lbrace") { const br=parseBraceRaw() ?? ""; pointsRaw=br; raw="coordinates {"+br+"}"; }
+    } else if (nxt?.kind==="ident" && nxt.text.toLowerCase()==="table") {
+      consume();
+      dataKind="table";
+      if (peek()?.kind==="lbracket") { const o=parseBracketOptions(); tableOptions=o.map(x=>x.raw).join(","); }
+      if (peek()?.kind==="lbrace") { const br=parseBraceRaw() ?? ""; tableRaw=br; raw="table {"+br+"}"; }
+      else { pointsRaw=""; raw="table"; }
+    } else if (nxt?.kind==="ident" && nxt.text.toLowerCase()==="expression") {
+      consume();
+      dataKind="expression";
+      if (peek()?.kind==="lbrace") { const br=parseBraceRaw() ?? ""; expr=br; raw=br; }
+    } else if (nxt?.kind==="lbrace") {
+      const br=parseBraceRaw() ?? "";
+      // Heuristic: if br contains "(" and "," assume coordinates; if contains "\\" assume table? else expression
+      if (br.includes("(") && br.includes(",")) { dataKind="coordinates"; pointsRaw=br; raw=br; }
+      else if (br.includes("\\\\") || (br.includes(" ") && !br.includes("("))) { dataKind="table"; tableRaw=br; raw=br; }
+      else { dataKind="expression"; expr=br; raw=br; }
+    } else if (nxt?.kind==="ident" && nxt.text.toLowerCase()==="file") {
+      consume(); dataKind="table"; raw="file";
+    } else {
+      // no brace, maybe expression without braces? capture until ;
+      let buf="";
+      while(peek() && peek()!.kind!=="semi" && !(peek()!.kind==="cs" && (peek()!.text==="\\addplot"||peek()!.text.startsWith("\\addlegend")))){
+        if(peek()!.kind==="lbrace"){ const br=parseBraceRaw() ?? ""; buf+= "{"+br+"}"; if(!expr){ expr=br; dataKind="expression"; } }
+        else buf+= consume()!.text+" ";
+        if(peek()?.kind==="cs" && peek()!.text==="\\end") break;
+      }
+      raw=buf.trim();
+      if(!expr && raw) { expr=raw; dataKind="expression"; }
+    }
+    // consume optional ;
+    if (peek()?.kind==="semi") consume();
+    // combine raw for detection (include options)
+    const optsRaw = opts.map(o=>o.raw).join(",");
+    const fullRaw = optsRaw + " " + raw;
+    return { kind:"addplot", options:opts, raw:fullRaw, dataKind, expr, pointsRaw, tableRaw, tableOptions, loc };
+  }
+  function parseAddLegendEntryStatement(cs: Token): AddLegendEntryStatement | null {
+    const loc=locFrom(cs);
+    let text="";
+    if(peek()?.kind==="lbrace") text=parseBraceRaw() ?? "";
+    else if(peek()?.kind==="lbracket"){ const o=parseBracketOptions(); void o; if(peek()?.kind==="lbrace") text=parseBraceRaw() ?? ""; }
+    if(peek()?.kind==="semi") consume();
+    return { kind:"addlegendentry", text: text.trim(), loc };
+  }
+  function parseLegendStatement(cs: Token): LegendStatement | null {
+    const loc=locFrom(cs);
+    let raw="";
+    if(peek()?.kind==="lbrace") raw=parseBraceRaw() ?? "";
+    const entries=raw.split(",").map(s=>s.trim().replace(/[{}]/g,"")).filter(Boolean);
+    if(peek()?.kind==="semi") consume();
+    return { kind:"legend", entries, loc };
+  }
+  function parseAxisStatement(beginTok: Token, envName: string): AxisStatement | null {
+    const loc=locFrom(beginTok);
+    const opts = parseBracketOptions();
+    const body: (AddPlotStatement|AddLegendEntryStatement|LegendStatement|PictureBodyItem)[]=[];
+    while(peek()){
+      const tt=peek()!;
+      if(tt.kind==="cs" && tt.text==="\\end"){
+        // peek ahead env name
+        let k=i+1; let env="";
+        while(k<tokens.length && tokens[k].kind!=="lbrace") k++;
+        if(k<tokens.length){
+          let q=k+1; let inner="";
+          while(q<tokens.length && tokens[q].kind!=="rbrace"){ inner+=tokens[q].text; q++; }
+          env=inner.trim();
+        }
+        if(env.toLowerCase()===envName.toLowerCase()){
+          consume(); // \end
+          parseBraceRaw(); // {env}
+          break;
+        }
+      }
+      // try addplot
+      const pt=peek()!;
+      if(pt.kind==="cs" && pt.text.startsWith("\\addplot")){
+        const stmt=parseAddPlotStatement(consume()!);
+        if(stmt) body.push(stmt as any);
+        continue;
+      }
+      if(pt.kind==="cs" && pt.text==="\\addlegendentry"){
+        const stmt=parseAddLegendEntryStatement(consume()!);
+        if(stmt) body.push(stmt as any);
+        continue;
+      }
+      if(pt.kind==="cs" && pt.text==="\\legend"){
+        const stmt=parseLegendStatement(consume()!);
+        if(stmt) body.push(stmt as any);
+        continue;
+      }
+      // generic inside axis (maybe TikZ draw)
+      const inner = parseAnyStatementInPicture();
+      if(inner) { body.push(inner as any); continue; }
+      if(peek()?.kind==="lbrace"){ const sc=parseBraceScope(); if(sc){ body.push(sc as any); continue; } }
+      if(peek()) consume(); else break;
+    }
+    return { kind:"axis", envName, options:opts, body, loc };
+  }
+
   function parseAnyStatementInPicture(): PictureBodyItem | null {
     const t = peek();
     if (!t) return null;
+    // Phase9 top-level addplot etc even outside axis (should be inside but handle)
+    if (t.kind==="cs" && t.text.startsWith("\\addplot")) {
+      return parseAddPlotStatement(consume()!) as unknown as PictureBodyItem;
+    }
+    if (t.kind==="cs" && t.text==="\\addlegendentry") {
+      return parseAddLegendEntryStatement(consume()!) as unknown as PictureBodyItem;
+    }
+    if (t.kind==="cs" && t.text==="\\legend") {
+      return parseLegendStatement(consume()!) as unknown as PictureBodyItem;
+    }
     if (t.kind === "cs") {
       switch (t.text) {
         case "\\draw":
@@ -1537,6 +1674,12 @@ export function parse(source: string): ParseResult {
                 }
               }
               return { kind: "scope", options: opts, body, loc };
+            } else if (isAxisEnv(braceContent ?? "")) {
+              const envName = braceContent!.trim();
+              parseBraceRaw(); // consume {axis...}
+              const axisStmt = parseAxisStatement(beginTok, envName);
+              if (axisStmt) return axisStmt as unknown as PictureBodyItem;
+              return null;
             } else if ((braceContent ?? "").trim() === "pgfonlayer") {
               // Handle \begin{pgfonlayer}{name} — consume {pgfonlayer} then {name}
               parseBraceRaw(); // consume {pgfonlayer}
@@ -1944,11 +2087,10 @@ export function parse(source: string): ParseResult {
         }
         continue;
       }
-      // otherwise \begin{scope} — will be handled inside picture body, but if at top level, treat as standalone
-      // For top-level, create implicit picture for scope
+      // otherwise \begin{scope} or \begin{axis} — handle at top-level as implicit picture
       const scItem = parseAnyStatementInPicture();
       if (scItem) {
-        if (pendingPreamble.length > 0 || scItem.kind === "scope") {
+        if (pendingPreamble.length > 0 || scItem.kind === "scope" || scItem.kind === "axis") {
           // Wrap in implicit picture
           const pic: Picture = { kind: "picture", options: [], body: [...pendingPreamble, scItem], loc: (scItem as any).loc };
           ast.push(pic); pictures.push(pic);
@@ -1957,6 +2099,27 @@ export function parse(source: string): ParseResult {
           pendingPreamble.push(scItem);
         }
         continue;
+      }
+      // try axis detection fallback for top-level lenient without parseAnyStatement?
+      // check if \begin{axis} was not consumed due to unknown handling -> peek again with axis check
+      {
+        let j=i+1; let env="";
+        while(j<tokens.length && tokens[j].kind!=="lbrace") j++;
+        if(j<tokens.length){
+          let k=j+1; let inner="";
+          while(k<tokens.length && tokens[k].kind!=="rbrace"){ inner+=tokens[k].text; k++; }
+          env=inner.trim();
+          if(isAxisEnv(env)){
+            const beginTok=consume()!; // \begin
+            parseBraceRaw(); // {axis}
+            const axisStmt=parseAxisStatement(beginTok, env);
+            if(axisStmt){
+              const pic: Picture={ kind:"picture", options:[], body:[...pendingPreamble, axisStmt as any], loc: axisStmt.loc };
+              ast.push(pic); pictures.push(pic); pendingPreamble.length=0;
+              continue;
+            }
+          }
+        }
       }
       consume();
       continue;

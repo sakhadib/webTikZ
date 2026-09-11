@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.8.0 — **Phase 8 (Advanced Rendering & 3D)** — 0.8 Release — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~49 KB gz (Phase 8, 164 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/parser/index.ts:372` (3D/z), `src/core/evaluator.ts:2221` (3D projection), `src/render/canvas.ts:70` (fading/blend/shadow), `src/render/displayList.ts:41`
-> **Tests:** 496 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + Phase 8: 39 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.9.0 — **Phase 9 (pgfplots-lite)** — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~55 KB gz (Phase 9, 187 KB raw) + `dist/webtikz-plots.js` 7 KB gz plugin, IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/plots/index.ts:1`, `src/parser/index.ts:165` (axis/addplot), `src/core/evaluator.ts:21` (axis)
+> **Tests:** 539 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + Phase 8: 39 + Phase 9: 43 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 8**. Anything tagged Phase 9+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 9**. Anything tagged Phase 10+ is *not yet implemented* and will error or be ignored.
 
 ---
 
@@ -289,7 +289,7 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 6 Decorations | **Done 2026-09-11** | 43 KB gz | 45 tests; automaton, pathmorphing, pathreplacing, markings, text/footprints/fractals |
 | 7 Structured diagrams | **Done 2026-09-11** | 46 KB gz | 50 tests; matrix, trees, graphs, automata/mindmap, graph drawing (circular/layered/spring/RT) |
 | 8 Advanced rendering & 3D | **Done 2026-09-11** | 49 KB gz | 39 tests; fadings, transparency/blend, shadows, 3D/tdplot/spy, includegraphics, transform canvas — **Release 0.8** |
-| 9 Plotting (pgfplots-lite) | TODO | < ? | axis, addplot, 3D surf |
+| 9 Plotting (pgfplots-lite) | **Done 2026-09-11** | 55+7 KB gz | 43 tests; axis, semilog/loglog, ybar/xbar/stacked, area/fill between/error bars, colormap viridis, surf/mesh — **Plugin** |
 | 10 Web-native | TODO | < ? | interactivity, animation, theming |
 | … | … | … | … |
 
@@ -1086,3 +1086,52 @@ Spy clones region as clipped lens; `transform canvas={scale, rotate, shift, xsla
 ---
 
 **For AI (updated for Phase 8 — Release 0.8):** Use `path fading`/`scope fading` + `fading angle` for vignettes, `transparency group` + `blend group=multiply` for compositing, `shadows` `drop shadow` for lifted cards. For 3D use `(x,y,z)` with custom `x/y/z` or `\tdplotsetmaincoords{60}{110}` + `tdplot_main_coords`; for planes use `canvas is xy plane at z=`. For magnifiers use `spy` library; for photos use `\includegraphics[width=…]{url}`. Still no `pgfplots` axis (Phase 9) — for plots use `plot` with `domain/samples` from Phase 5.
+
+---
+
+## 18. Phase 9 — pgfplots-lite — **NEW in 0.9.0 (Plugin)**
+
+> **Scope:** `src/plots/index.ts:1`, `src/parser/index.ts:165`, `src/core/evaluator.ts:21`
+> **Tests:** 43 (`tests/unit/phase9.test.ts:1`) — 539 total, 55 KB gz + 7 KB gz plugin
+
+WebTikZ's companion for data — `axis` with TikZ-compatible `\addplot`.
+
+### 18.1 Axis — `src/plots/index.ts:1`
+
+```tex
+\begin{axis}[width=8cm, height=6cm, xmin=0,xmax=5, ymin=0,ymax=10, xlabel=$x$, ylabel=$y$, title=Demo, grid=major, axis lines=box]
+  \addplot[blue, thick] coordinates {(0,0) (1,2) (2,1) (3,3)};
+  \addlegendentry{data}
+\end{axis}
+\begin{semilogxaxis}[xlabel=log x] \addplot[domain=1:100, samples=30] {ln(x)}; \end{semilogxaxis}
+\begin{loglogaxis} \addplot coordinates {(1,1) (10,10) (100,100)}; \end{loglogaxis}
+```
+
+Axis types: `axis`, `semilogxaxis`, `semilogyaxis`, `loglogaxis` → log via `Math.log10` in `xAxisScale`. Ticks auto (nice numbers), `grid=major/minor/both` as faint lines, `axis lines=box|left|middle`.
+
+### 18.2 Plot Types
+
+```tex
+\addplot[ybar] coordinates {(1,2) (2,4) (3,1)}; % vertical bars
+\addplot[xbar] coordinates {(1,2) (2,4)};       % horizontal
+\addplot[ybar stacked] coordinates {(1,1)} \addplot[ybar stacked] coordinates {(1,2)}; % stacked via cumulative Map
+\addplot[scatter, mark=*, only marks] coordinates {(0,0) (1,2)};
+\addplot[area, fill=blue!20] {x^2}; \addplot[domain=0:3] {x};
+\addplot[name path=A, domain=0:3] {x} \addplot[name path=B, domain=0:3] {x+1} \addplot[fill between/of=A and B, fill=red!20];
+\addplot[error bars/y dir=both, error bars/y explicit] coordinates {(1,2) +- (0,0.5) (2,3) +- (0,0.3)};
+\addplot[mesh, colormap/viridis, samples=20, domain=0:1] {x}; % colormap
+```
+
+Colormap `viridis` stub via `viridis(t)` gradient stops.
+
+### 18.3 3D Surf — stub
+
+```tex
+\begin{axis}[view={60}{30}] \addplot3[surf, domain=0:1, y domain=0:1, samples=10] {x*y}; \addplot3[mesh] {sin(deg(x))*cos(deg(y))}; \end{axis}
+```
+
+Grid `N≈√samples` → mesh/surf as wireframe/filled quads, best-effort.
+
+---
+
+**For AI (updated for Phase 9):** For charts prefer `\begin{axis}...\addplot...` over manual `draw plot`. Use `axis` + `grid` + `xlabel` for data, `semilogx/loglog` for log, `ybar/xbar` + `stacked` for bars, `fill between` for bands, `error bars` for uncertainty, `colormap/viridis` for heat, `surf/mesh` for 3D. Still no web interactivity (Phase 10) — for hover use `nodes` + `label` instead.

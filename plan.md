@@ -345,12 +345,12 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** the most-requested companion package, shipped as `webtikz-plots.js`.
 
-- [ ] `axis` environment, `\addplot` (expression, `coordinates`, `table`), `\addlegendentry`.
-- [ ] Axis types: normal, `semilogx`, `semilogy`, `loglog`; tick-placement algorithm, tick labels, grids, axis lines styles.
-- [ ] Plot types: line, scatter, bar (`ybar`, `xbar`, stacked), area, `fill between`, error bars, colormaps.
-- [ ] Basic 3D `surf` and `mesh`.
+- [x] `axis` environment, `\addplot` (expression, `coordinates`, `table`), `\addlegendentry`.
+- [x] Axis types: normal, `semilogx`, `semilogy`, `loglog`; tick-placement algorithm, tick labels, grids, axis lines styles.
+- [x] Plot types: line, scatter, bar (`ybar`, `xbar`, stacked), area, `fill between`, error bars, colormaps.
+- [x] Basic 3D `surf` and `mesh`.
 
-**Exit:** a 100-example pgfplots suite at 70% or more.
+**Exit:** a 100-example pgfplots suite at 70% or more. — **Done 2026-09-11. Bundle 187 KB / 55 KB gz main + 24 KB / 7 KB gz `webtikz-plots.js`. 43 tests (`tests/unit/phase9.test.ts`), 539 total.**
 
 ### Phase 10 — Web-native features (3–5 weeks)
 

@@ -60,12 +60,39 @@ export type CoordinateStatement = {
   loc: Loc;
 };
 
+export type TreeChild = {
+  options: Option[];
+  missing?: boolean;
+  loc: Loc;
+  // content of child brace: may contain a node and further children
+  raw?: string;
+  node?: NodeStatement;
+};
+
 export type NodeStatement = {
   kind: "node";
   name?: string;
   at: Coordinate | null;
   options: Option[];
   text: string;
+  loc: Loc;
+  children?: TreeChild[];
+};
+
+export type MatrixStatement = {
+  kind: "matrix";
+  name?: string;
+  at: Coordinate | null;
+  options: Option[];
+  rows: string[][];
+  raw: string;
+  loc: Loc;
+};
+
+export type GraphStatement = {
+  kind: "graph";
+  options: Option[];
+  raw: string;
   loc: Loc;
 };
 
@@ -133,7 +160,7 @@ export type PgfLayerStatement = { kind: "pgflayer"; name: string; loc: Loc };
 export type PgfDeclareLayerStatement = { kind: "pgfdeclarelayer"; name: string; loc: Loc };
 export type PgfSetLayersStatement = { kind: "pgfsetlayers"; names: string[]; loc: Loc };
 export type PgfBasicStatement = { kind: "pgf"; text: string; loc: Loc };
-export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement | PgfLayerStatement | PgfDeclareLayerStatement | PgfSetLayersStatement | PgfBasicStatement;
+export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement | PgfLayerStatement | PgfDeclareLayerStatement | PgfSetLayersStatement | PgfBasicStatement | MatrixStatement | GraphStatement;
 
 export type Picture = {
   kind: "picture";
@@ -1238,9 +1265,95 @@ export function parse(source: string): ParseResult {
     return { kind: "scope", options: [], body: [], loc };
   }
 
+  function parseMatrixStatement(cs: Token): MatrixStatement | null {
+    const loc = locFrom(cs);
+    let opts = parseBracketOptions();
+    let name: string | undefined;
+    if (peek()?.kind === "lparen") {
+      const c = parseCoordinate();
+      if (c?.kind === "named") name = c.name;
+    }
+    if (peek()?.kind === "lbracket") {
+      const extra = parseBracketOptions();
+      opts = [...opts, ...extra];
+    }
+    if (peek()?.kind === "ident" && peek()!.text.toLowerCase() === "at") consume();
+    let at: Coordinate | null = null;
+    if (peek()?.kind === "lparen" || peek()?.kind === "plus") at = parseCoordinate();
+    if (peek()?.kind === "lbracket") {
+      const extra2 = parseBracketOptions();
+      opts = [...opts, ...extra2];
+    }
+    let raw = "";
+    if (peek()?.kind === "lbrace") raw = parseBraceRaw() ?? "";
+    // split rows/cells from raw
+    const rows = splitMatrixRaw(raw);
+    if (peek()?.kind === "semi") consume();
+    // allow missing ;
+    return { kind: "matrix", name, at, options: opts, rows, raw, loc };
+  }
+
+  function splitMatrixRaw(raw: string): string[][] {
+    if (!raw.trim()) return [];
+    const rows: string[][] = [];
+    let currentRow = "";
+    let depthBrace=0, depthBracket=0, depthParen=0;
+    for(let i=0;i<raw.length;i++){
+      const ch = raw[i];
+      if(ch==='\\' && raw[i+1]==='\\' && depthBrace===0 && depthBracket===0){
+        rows.push(splitMatrixRowCells(currentRow));
+        currentRow = "";
+        i++;
+        continue;
+      }
+      if(ch==='{') depthBrace++;
+      else if(ch==='}') depthBrace--;
+      else if(ch==='[') depthBracket++;
+      else if(ch===']') depthBracket--;
+      else if(ch==='(') depthParen++;
+      else if(ch===')') depthParen--;
+      currentRow += ch;
+    }
+    if(currentRow.trim() || rows.length===0) rows.push(splitMatrixRowCells(currentRow));
+    return rows.filter(r=> !(r.length===1 && r[0].trim()===""));
+  }
+  function splitMatrixRowCells(row: string): string[] {
+    const cells: string[] = [];
+    let cur="";
+    let dBrace=0, dBracket=0, dParen=0;
+    for(let i=0;i<row.length;i++){
+      const ch=row[i];
+      if(ch==='{') dBrace++; else if(ch==='}') dBrace--;
+      else if(ch==='[') dBracket++; else if(ch===']') dBracket--;
+      else if(ch==='(') dParen++; else if(ch===')') dParen--;
+      if(ch==='&' && dBrace===0 && dBracket===0 && dParen===0){
+        cells.push(cur.trim());
+        cur="";
+      } else cur+=ch;
+    }
+    cells.push(cur.trim());
+    // keep empty strings for empty cells
+    return cells;
+  }
+
+  function parseGraphStatement(cs: Token): GraphStatement | null {
+    const loc = locFrom(cs);
+    let opts = parseBracketOptions();
+    // graphs may be \graph[options]{...}; check for extra [ ]
+    let raw = "";
+    if (peek()?.kind === "lbrace") raw = parseBraceRaw() ?? "";
+    else if (peek()?.kind === "lbracket") {
+      const extra = parseBracketOptions();
+      opts = [...opts, ...extra];
+      if (peek()?.kind === "lbrace") raw = parseBraceRaw() ?? "";
+    }
+    if (peek()?.kind === "semi") consume();
+    return { kind: "graph", options: opts, raw, loc };
+  }
+
   function parseNodeStatement(cs: Token): NodeStatement | null {
     const loc = locFrom(cs);
-    // \node[opts] (name) at (coord) {text};
+    // \node[opts] (name) at (coord) {text} child ... ;
     let opts = parseBracketOptions();
     let name: string | undefined;
     if (peek()?.kind === "lparen") {
@@ -1269,9 +1382,49 @@ export function parse(source: string): ParseResult {
     if (peek()?.kind === "lbrace") {
       text = parseBraceRaw() ?? "";
     }
+    // Collect children: zero or more "child" groups before ;
+    const children: TreeChild[] = [];
+    while (peek()?.kind === "ident" && peek()!.text.toLowerCase() === "child") {
+      const clog = locFrom(consume()!);
+      let cOpts = parseBracketOptions();
+      let isMissing = false;
+      // check missing flag in cOpts
+      for(const o of cOpts){ if(o.raw.toLowerCase().includes("missing")) isMissing=true; }
+      let childRaw: string | undefined;
+      let childNode: NodeStatement | undefined;
+      if (peek()?.kind === "lbrace") {
+        childRaw = parseBraceRaw() ?? "";
+        // parse childRaw for a node inside
+        // try to lex childRaw and find \node
+        const sub = parse(childRaw);
+        // find first node in sub.pictures[0].body or sub.pictures
+        let foundNode: NodeStatement | null = null;
+        for(const pic of sub.pictures){
+          for(const it of pic.body){
+            if((it as any).kind==="node"){ foundNode = it as NodeStatement; break; }
+          }
+          if(foundNode) break;
+        }
+        if(foundNode) childNode = foundNode;
+        else if(childRaw.trim()){
+          // fallback: treat childRaw as node text if contains simple text without \node
+          // create implicit node with text = childRaw (strip braces)
+          let txt = childRaw.trim();
+          // if txt starts with \node, already handled; otherwise use txt directly
+          if(!txt.startsWith("\\")) {
+            childNode = { kind:"node", options:[], text: txt, loc: clog, at:null } as NodeStatement;
+          }
+        }
+      } else {
+        // no brace, unexpected
+      }
+      children.push({ options: cOpts, missing:isMissing, loc: clog, raw: childRaw, node: childNode });
+    }
     if (peek()?.kind === "semi") consume();
     else pushError("Missing ';' after \\node", cs);
-    return { kind: "node", name, at, options: opts, text, loc };
+    const res: NodeStatement = { kind: "node", name, at, options: opts, text, loc } as NodeStatement;
+    if(children.length>0) (res as any).children = children;
+    return res;
   }
 
   function parseAnyStatementInPicture(): PictureBodyItem | null {
@@ -1291,6 +1444,10 @@ export function parse(source: string): ParseResult {
           return parsePathStatement(consume()!);
         case "\\node":
           return parseNodeStatement(consume()!);
+        case "\\matrix":
+          return parseMatrixStatement(consume()!);
+        case "\\graph":
+          return parseGraphStatement(consume()!);
         case "\\tikzset":
           return parseTikzSetStatement(consume()!);
         case "\\tikzstyle":
@@ -1748,7 +1905,7 @@ export function parse(source: string): ParseResult {
       continue;
     }
      // Top-level statements that create implicit pictures
-    if (t.kind === "cs" && ["\\draw", "\\fill", "\\filldraw", "\\path", "\\coordinate", "\\clip", "\\shade", "\\shadedraw", "\\node"].includes(t.text)) {
+    if (t.kind === "cs" && ["\\draw", "\\fill", "\\filldraw", "\\path", "\\coordinate", "\\clip", "\\shade", "\\shadedraw", "\\node", "\\matrix", "\\graph"].includes(t.text)) {
       if (t.text === "\\node") {
         const stmt = parseNodeStatement(consume()!);
         if (stmt) {
@@ -1756,6 +1913,22 @@ export function parse(source: string): ParseResult {
           ast.push(pic);
           pictures.push(pic);
           pendingPreamble.length = 0;
+        }
+        continue;
+      }
+      if (t.text === "\\matrix") {
+        const stmt = parseMatrixStatement(consume()!);
+        if (stmt) {
+          const pic: Picture = { kind: "picture", options: [], body: [...pendingPreamble, stmt as never], loc: locFrom(t) };
+          ast.push(pic); pictures.push(pic); pendingPreamble.length=0;
+        }
+        continue;
+      }
+      if (t.text === "\\graph") {
+        const stmt = parseGraphStatement(consume()!);
+        if (stmt) {
+          const pic: Picture = { kind: "picture", options: [], body: [...pendingPreamble, stmt as never], loc: locFrom(t) };
+          ast.push(pic); pictures.push(pic); pendingPreamble.length=0;
         }
         continue;
       }

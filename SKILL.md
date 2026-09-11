@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.6.0 — **Phase 6 (Decorations)** complete — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~43 KB gz (Phase 6, 140 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/decorations/index.ts:12`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1350`, `src/geometry/path.ts:1`
-> **Tests:** 407 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.7.0 — **Phase 7 (Structured Diagrams)** complete — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~46 KB gz (Phase 7, 153 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/parser/index.ts:63` (matrix/graph), `src/core/evaluator.ts:17` (matrix/tree/graph), `src/graphDrawing/index.ts:1`
+> **Tests:** 457 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 6**. Anything tagged Phase 7+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 7**. Anything tagged Phase 8+ is *not yet implemented* and will error or be ignored.
 
 ---
 
@@ -287,7 +287,8 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 4 Geometry & styling | **Done 2026-09-11** | 35 KB gz | 46 tests; calc, perpendicular, intersections, arrows.meta, shadings, patterns, bbox |
 | 5 Composition | **Done 2026-09-11** | 38 KB gz | 50 tests; pics, quotes, edge/to path, plot, fit, backgrounds, layers, shape libs, through, PGF basic — **Core 0.5** |
 | 6 Decorations | **Done 2026-09-11** | 43 KB gz | 45 tests; automaton, pathmorphing, pathreplacing, markings, text/footprints/fractals |
-| 7 Structured diagrams | TODO | < ? | matrix, trees, graphs |
+| 7 Structured diagrams | **Done 2026-09-11** | 46 KB gz | 50 tests; matrix, trees, graphs, automata/mindmap, graph drawing (circular/layered/spring/RT) |
+| 8 Advanced rendering & 3D | TODO | < ? | fadings, transparency, shadows, 3D, spy |
 | … | … | … | … |
 
 *Build:* `npm run build` → `dist/webtikz.js` (IIFE), `dist/webtikz.mjs` (ESM). Size budget enforced in CI — `plan.md:223`.
@@ -930,3 +931,82 @@ All generators resample via `pointAtDistance`/`tangentAtT` from `src/geometry/pa
 ---
 
 **For AI (updated for Phase 6):** Use `decorate` + `decoration={name, amplitude, segment length}` for wiggly/bumpy/coiled lines. For braces use `decorate, decoration={brace, mirror, amplitude=5pt}`. For arrows mid-path use `decorations.markings` `mark=at position 0.5`. For hand-drawn style combine `random steps`. Still no `matrix/trees/graphs` (Phase 7) — arrange those manually with `positioning`+`calc`.
+
+---
+
+## 16. Phase 7 — Structured Diagrams — **NEW in 0.7.0**
+
+> **Scope:** `src/parser/index.ts:63` `src/core/evaluator.ts:17` `src/graphDrawing/index.ts:1`
+> **Tests:** 50 (`tests/unit/phase7.test.ts:1`) — 457 total, 46 KB gz
+
+Phase 7 adds high-level structuring: matrices, trees, and graphs with automatic layout.
+
+### 16.1 Matrix — `src/parser/index.ts:63`, `src/core/evaluator.ts:17`
+
+```tex
+\usetikzlibrary{matrix}
+\matrix (m) [matrix of nodes, row sep=5mm, column sep=5mm] {
+  a & b & c \\
+  d & e & f \\
+};
+\node at (m-1-2) {top}; % auto-named m-row-col
+\matrix[matrix of math nodes, nodes in empty cells, row 1 column 2/.style={red}] {
+  x & y \\ z &  \\
+};
+```
+
+Deferred measure: all cell texts measured first, `colWidths`/`rowHeights` computed with `row sep`/`column sep`, placed at `matrix.at` anchor.
+
+### 16.2 Trees — `src/core/evaluator.ts:17`
+
+```tex
+\usetikzlibrary{trees}
+\node {root}
+  child {node {A} child {node {A1}} child {node {A2}}}
+  child {node {B} child[missing] {} child {node {B2}} };
+\tikzset{level 1/.style={sibling distance=2cm}, level 2/.style={sibling distance=1cm}, level distance=1.5cm}
+\node {root} child[grow=90] {node {up}} child[grow'=-90] {node {down}};
+% edge from parent handles via edgeFromParent style
+```
+
+`evaluateTreeChildren` uses `grow` angle, `level distance`/`sibling distance`, `missing` skips placement.
+
+### 16.3 Graphs — `src/parser/index.ts:63`
+
+```tex
+\usetikzlibrary{graphs}
+\graph {a -> b -> {c, d -> e} };
+\graph {a ->[red] b ->[bend left] c};
+\graph { {a,b,c} -- complete graph }; % named generator proxy
+\graph[edges={->}] { a -> b; b -> c; }
+```
+
+Groups `{c,d}` expand; edges become `--`/`->` with options. Layout via next section if no coords.
+
+### 16.4 Graph Drawing — `src/graphDrawing/index.ts:1`
+
+```tex
+\usetikzlibrary{graphdrawing} \usegdlibrary{layered, circular}
+\graph[layered layout, sibling distance=2cm, level distance=1.5cm] {a -> b -> c; a -> d -> c};
+\graph[spring layout] {a -- b -- c -- a};
+\graph[circular layout] {a -- b -- c -- d -- a};
+\graph[tree layout, grow=down] {a -> {b -> {d,e}, c -> f}};
+```
+
+Algorithms: `circularLayout` (2π/n), `layeredLayout` BFS rank (Sugiyama), `springLayout` 50-iter force, `treeLayout` (Reingold-Tilford), `gridLayout`. Selected via keys `layered layout`/`spring layout`/`graph drawing`.
+
+### 16.5 Automata / Chains / Mindmap — stub accept
+
+```tex
+\usetikzlibrary{automata, chains, mindmap}
+\node[state, initial, accepting] (q0) at (0,0) {$q_0$};
+\draw[->] (q0) edge[loop above] node {0} (q0) edge[bend left] node {1} (q1);
+\begin{scope}[start chain] \node[on chain] {A}; \node[on chain] {B}; \end{scope}
+\node[concept, color=red] {Root} child[concept color=blue] {node[concept]{Child}};
+```
+
+Keys `state/initial/accepting/loop/chain/concept` accepted as styles; visual matching best-effort.
+
+---
+
+**For AI (updated for Phase 7):** For tables use `\matrix[matrix of nodes,row sep,column sep] {a & b\\ c & d}` and reference `m-1-2`. For hierarchies use `node {root} child {node {leaf}}` with `level distance`/`sibling distance`/`grow`. For networks use `\graph {a -> b -> {c,d}}` and add `spring layout`/`layered layout`/`circular layout` for auto-placement — significantly easier than TikZ (no LuaTeX needed). For FSM use `automata` `state/initial/accepting` + `edge[loop above]`. Still no `fadings/3D/spy` (Phase 8) — for those approximate with `opacity`/`shadings`.

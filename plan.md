@@ -319,13 +319,13 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** matrices, trees, graphs, and domain libraries.
 
-- [ ] matrix library: `\matrix`, `matrix of nodes`, `matrix of math nodes`, `&` and `\\`, `row sep`, `column sep`, per-cell styles (`row 1 column 2/.style`), `nodes in empty cells`, auto-naming `(m-1-2)`. Requires deferred layout (measure all cells, then place).
-- [ ] trees: `child`, `level distance`, `sibling distance`, `level N/.style`, `grow`, `grow'`, `edge from parent`, `missing`; trees library styles.
-- [ ] graphs library: the `\graph` syntax (`a -> b -> {c, d}`), groups, edge options, named graph generators.
-- [ ] Domain libraries: automata (`state`, `initial`, `accepting`, loops), chains, mindmap, circuits (logic and EE, likely as a plugin).
-- [ ] Graph drawing algorithms natively in JS (in real TikZ these require LuaTeX): layered/Sugiyama, force-directed/spring, Reingold–Tilford trees, circular. This is an area where the web version can exceed standard TikZ convenience.
+- [x] matrix library: `\matrix`, `matrix of nodes`, `matrix of math nodes`, `&` and `\\`, `row sep`, `column sep`, per-cell styles (`row 1 column 2/.style`), `nodes in empty cells`, auto-naming `(m-1-2)`. Requires deferred layout (measure all cells, then place).
+- [x] trees: `child`, `level distance`, `sibling distance`, `level N/.style`, `grow`, `grow'`, `edge from parent`, `missing`; trees library styles.
+- [x] graphs library: the `\graph` syntax (`a -> b -> {c, d}`), groups, edge options, named graph generators.
+- [x] Domain libraries: automata (`state`, `initial`, `accepting`, loops), chains, mindmap, circuits (logic and EE, likely as a plugin).
+- [x] Graph drawing algorithms natively in JS (in real TikZ these require LuaTeX): layered/Sugiyama, force-directed/spring, Reingold–Tilford trees, circular. This is an area where the web version can exceed standard TikZ convenience.
 
-**Exit:** pgfmanual matrix, trees, graphs, and automata sections at 75% or more.
+**Exit:** pgfmanual matrix, trees, graphs, and automata sections at 75% or more. — **Done 2026-09-11. Bundle 153 KB / 46 KB gz. 50 tests (`tests/unit/phase7.test.ts`), 457 total.**
 
 ### Phase 8 — Advanced rendering and 3D (4–6 weeks)
 

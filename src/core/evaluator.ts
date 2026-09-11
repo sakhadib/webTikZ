@@ -17,6 +17,8 @@ import { computeNodeDimensions, defaultNodeOptions, getAnchor, getBorderPoint } 
 import type { NodeEntry } from "../nodes/index.ts";
 import { getDecoration, defaultCommon } from "../decorations/index.ts";
 import type { DecorationCommon } from "../decorations/index.ts";
+import { layoutForOptions, circularLayout, layeredLayout, springLayout, treeLayout } from "../graphDrawing/index.ts";
+import { lex } from "../lexer/index.ts";
 
 export interface EvalOptions { scale?: number; }
 export interface EvalError { message: string; line: number; column: number; pos: number; severity: "error" | "warning"; codeFrame?: string; }
@@ -226,7 +228,21 @@ async function evaluatePicture(
         // label/pin handling
         const labelItems = await handleLabels(entry, stmt.options, localNamed, nodeEntries, localMacros, transform, errors, ks);
         for (const li of labelItems) items.push(li);
+        // Phase7: tree children recursion
+        const children = (stmt as any).children as import("../parser/index.ts").TreeChild[] | undefined;
+        if (children && children.length>0) {
+          await evaluateTreeChildren(entry, children, localNamed, nodeEntries, localMacros, transform, errors, ks, items, nodes, syncNodeToNamed, 0);
+        }
       }
+    } else if ((stmt as any).kind === "matrix") {
+      const mat = await evaluateMatrix(stmt as any, localNamed, nodeEntries, localMacros, transform, errors, ks);
+      for(const d of mat.items) items.push(d);
+      for(const [k,v] of Object.entries(mat.nodes)) { nodes[k]=v; }
+      for(const e of mat.entries) nodeEntries.set(e.name!, e);
+    } else if ((stmt as any).kind === "graph") {
+      const g = await evaluateGraph(stmt as any, localNamed, nodeEntries, localMacros, transform, errors, ks);
+      for(const d of g.items) items.push(d);
+      for(const e of g.entries) { nodeEntries.set(e.name!, e); localNamed.set(e.name!, e.center); globalNamed.set(e.name!, e.center); nodes[e.name!] = { center:e.center, bbox:e.bbox }; }
     } else if (stmt.kind === "path") {
       const expandedOpts = ks.withEveryStyles(stmt.options, "path");
       // Phase4: handle name intersections as a special path that may not draw
@@ -2775,6 +2791,413 @@ async function handleLabels(
     for (const d of nodeToDisplayItems(labelEntry)) out.push(d);
   }
   return out;
+}
+
+// ---- Phase7 helpers: matrix, graph, trees ----
+async function evaluateTreeChildren(
+  parent: NodeEntry,
+  children: import("../parser/index.ts").TreeChild[],
+  named: Map<string, Vec2>,
+  nodeEntries: Map<string, NodeEntry>,
+  macros: Map<string, string>,
+  transform: Affine,
+  errors: EvalError[],
+  ks: ReturnType<typeof getKeySystem>,
+  items: DisplayItem[],
+  nodes: Record<string, {center:Vec2,bbox:BBox}>,
+  sync: (n:string,e:NodeEntry)=>void,
+  depth: number
+): Promise<void> {
+  // extract level/sibling/grow from parent options
+  let levelDist = 1.5*PT_PER_CM;
+  let siblingDist = 1.2*PT_PER_CM;
+  let growDeg = -90; // down
+  // Check parent options for overrides
+  // Also check ks styles for level N
+  const allParentOpts = parent ? [] : [];
+  // Use parent's original stmt options if available: we can look at nodeEntries via parent name? Instead use ks store? Simpler parse from globalMacros? For test, look up keys in macros? We'll attempt to parse from any .style registered for level
+  // For simplicity, check ks.getStyle for `level ${depth+1}`
+  const levelStyle = ks.getStyle(`level ${depth+1}`) ?? ks.getStyle(`level${depth+1}`);
+  if(levelStyle){
+    const sd = levelStyle.match(/sibling distance\s*=\s*([^\s,]+)/i);
+    if(sd){ try{ siblingDist=evaluateDimensionString(sd[1], new Map()); }catch{} }
+    const ld = levelStyle.match(/level distance\s*=\s*([^\s,]+)/i);
+    if(ld){ try{ levelDist=evaluateDimensionString(ld[1], new Map()); }catch{} }
+  }
+  // Filter missing
+  const visible = children.filter(c=>!c.missing);
+  const n = visible.length;
+  if(n===0) return;
+  // Determine grow from parent's options if contains grow or grow'
+  // We would need parent stmt options - but we have not; try to infer from nodeEntries stored extra? For now keep -90
+  // If ks has grow style? ignore
+  // Iterate
+  for(let i=0;i<visible.length;i++){
+    const ch = visible[i];
+    // compute position
+    const mid = (n-1)/2;
+    const offsetIdx = i - mid;
+    const rad = growDeg * Math.PI/180;
+    const levelDir = new Vec2(Math.cos(rad)*levelDist, Math.sin(rad)*levelDist);
+    const perp = new Vec2(-Math.sin(rad)*siblingDist*offsetIdx, Math.cos(rad)*siblingDist*offsetIdx);
+    const childCenter = parent.center.add(levelDir).add(perp);
+    // Create child node entry
+    let childStmt = ch.node;
+    let childText = childStmt?.text ?? `child${depth}-${i}`;
+    let childName = childStmt?.name;
+    let childOpts = childStmt?.options ?? ch.options ?? [];
+    // Merge child options with level style?
+    // Evaluate node for child at childCenter directly (bypass at coord)
+    const font = parent.font;
+    const box = childText ? await defaultEngine.measure(childText, font, {}) : {width:10,height:6,depth:2};
+    const dims = computeNodeDimensions(box, { shape:"rectangle", draw:false, fill:null, drawColor:null, lineWidthPt:0.4, innerSepPt:3, outerSepPt:0.5, align:"center", anchor:"center", rotate:0, transformShape:false, font, text:childText, isCoordinate:false } as any);
+    const halfW = dims.halfW, halfH = dims.halfH;
+    const shape = getShape("rectangle");
+    const bbox = shape.computeBBox(childCenter, halfW, halfH, 0.5);
+    const entry: NodeEntry = { name: childName, center: childCenter, bbox, shape:"rectangle", halfW, halfH, outerSep:0.5, innerSep:3, rotation:0, transformShape:false, textBox:box, font, text: childText, anchor:"center" };
+    // check if childOpts suggests draw etc
+    const hasDraw = childOpts.some(o=>o.key.toLowerCase()==="draw"||o.raw.toLowerCase()==="draw");
+    if(hasDraw) (entry as any)._stroke = { color:"#000000", widthPt:0.4, cap:"butt", join:"miter", miterLimit:10, dash:null, dashPhasePt:0, opacity:1 };
+    const cname = childName ?? `tree_${depth}_${i}_${Math.random().toString(36).slice(2,5)}`;
+    // Use provided name if exists else generated but still register for edge?
+    const finalName = childName ?? cname;
+    entry.name = finalName;
+    sync(finalName, entry);
+    for(const d of nodeToDisplayItems(entry)) items.push(d);
+    // edge from parent
+    const shouldDrawEdge = ch.options.some(o=>o.raw.toLowerCase().includes("edge from parent")) || true; // default true in trees
+    if(shouldDrawEdge){
+      const pBorder = getBorderPoint(parent, childCenter);
+      const cBorder = getBorderPoint(entry, parent.center);
+      items.push({ kind:"path", segments:[{ kind:"moveTo", to:pBorder }, { kind:"lineTo", to:cBorder }], stroke:{ color:"#000000", widthPt:0.4, cap:"butt", join:"miter", miterLimit:10, dash:null, dashPhasePt:0, opacity:1 }, fill:null, isClosed:false } as any);
+    }
+    // recurse for Grandchildren: childStmt may have its own children if parsed
+    const grand = (childStmt as any)?.children as import("../parser/index.ts").TreeChild[] | undefined;
+    if(grand && grand.length>0){
+      await evaluateTreeChildren(entry, grand, named, nodeEntries, macros, transform, errors, ks, items, nodes, sync, depth+1);
+    } else if(ch.raw && ch.raw.includes("child")){
+      // raw contains further nested child keywords not parsed due to missing node wrapper, we have already parsed via sub parse? This case handled via childStmt recursion.
+    }
+  }
+}
+
+async function evaluateMatrix(
+  stmt: import("../parser/index.ts").MatrixStatement,
+  named: Map<string, Vec2>,
+  nodeEntries: Map<string, NodeEntry>,
+  macros: Map<string, string>,
+  transform: Affine,
+  errors: EvalError[],
+  ks: ReturnType<typeof getKeySystem>,
+): Promise<{items: DisplayItem[], nodes: Record<string,{center:Vec2,bbox:BBox}>, entries: NodeEntry[]}> {
+  const items: DisplayItem[] = [];
+  const nodes: Record<string,{center:Vec2,bbox:BBox}> = {};
+  const entries: NodeEntry[] = [];
+  // options parsing
+  let rowSep = 4; // pt default
+  let colSep = 4;
+  let isMatrixOfNodes = false;
+  let isMatrixOfMathNodes = false;
+  let nodesInEmptyCells = false;
+  for(const o of stmt.options){
+    const k=o.key.trim().toLowerCase();
+    const v=(o.value??"").trim();
+    const raw=o.raw.toLowerCase();
+    if(k==="row sep" && v){ try{ rowSep=evaluateDimensionString(v, macros);}catch{} }
+    else if(k==="column sep" && v){ try{ colSep=evaluateDimensionString(v, macros);}catch{} }
+    else if(k==="row sep" && !v){ rowSep=4; }
+    else if(raw.includes("matrix of nodes")){ if(raw.includes("math")) isMatrixOfMathNodes=true; else isMatrixOfNodes=true; }
+    else if(raw.includes("matrix of math nodes")) isMatrixOfMathNodes=true;
+    else if(k.includes("matrix of nodes")) isMatrixOfNodes=true;
+    else if(raw.includes("nodes in empty cells")) nodesInEmptyCells=true;
+  }
+  // also check raw options via ks? For matrix of nodes bare without = may be in options list as key without value
+  for(const o of stmt.options){ if(o.raw.toLowerCase().includes("matrix of nodes")) isMatrixOfNodes=true; if(o.raw.toLowerCase().includes("matrix of math nodes")){ isMatrixOfMathNodes=true; isMatrixOfNodes=true;} if(o.raw.toLowerCase().includes("nodes in empty cells")) nodesInEmptyCells=true; }
+  const mName = stmt.name ?? "m";
+  // base
+  let base = new Vec2(0,0);
+  if(stmt.at){
+    const pt = resolveCoord(stmt.at, named, errors, new Vec2(0,0), transform, macros, nodeEntries);
+    if(pt) base=pt;
+  } else {
+    base = transform.apply(new Vec2(0,0));
+  }
+  const rows = stmt.rows;
+  if(rows.length===0) return {items,nodes,entries};
+  const ncols = Math.max(...rows.map(r=>r.length));
+  // measure all cells
+  const cellTexts: string[][] = rows.map(r=>{
+    const expanded = [...r];
+    while(expanded.length < ncols) expanded.push("");
+    return expanded.map(cellRaw=>{
+      let t=cellRaw.trim();
+      // if matrix of nodes/math nodes, t is text directly (strip \node wrapper if present)
+      if(t.includes("\\node")){
+        const mm=t.match(/\{([^}]*)\}/);
+        if(mm) t=mm[1];
+        else t=t.replace(/\\node[^\{]*\{?/g,"").replace(/[\{\}]/g,"").trim();
+      }
+      // also strip $ for math nodes
+      if(isMatrixOfMathNodes && t.startsWith("$") && t.endsWith("$")) t=t.slice(1,-1);
+      return t;
+    });
+  });
+  // measure
+  const cellBoxes: any[][] = [];
+  const font = defaultFont();
+  for(let r=0;r<rows.length;r++){
+    cellBoxes[r]=[];
+    for(let c=0;c<ncols;c++){
+      const txt = cellTexts[r][c];
+      if(!txt && !nodesInEmptyCells){ cellBoxes[r][c]=null; continue; }
+      const box = await defaultEngine.measure(txt||"M", font, {});
+      cellBoxes[r][c]=box;
+    }
+  }
+  // col widths / row heights with padding (inner sep)
+  const colWidths: number[] = Array(ncols).fill(0);
+  const rowHeights: number[] = Array(rows.length).fill(0);
+  for(let c=0;c<ncols;c++){
+    let maxW=0;
+    for(let r=0;r<rows.length;r++){
+      const b=cellBoxes[r][c];
+      if(b) maxW=Math.max(maxW, b.width+6);
+      else if(nodesInEmptyCells) maxW=Math.max(maxW, 10);
+    }
+    colWidths[c]=maxW||12;
+  }
+  for(let r=0;r<rows.length;r++){
+    let maxH=0;
+    for(let c=0;c<ncols;c++){
+      const b=cellBoxes[r][c];
+      if(b) maxH=Math.max(maxH, b.height+b.depth+6);
+      else if(nodesInEmptyCells) maxH=Math.max(maxH, 10);
+    }
+    rowHeights[r]=maxH||12;
+  }
+  // per-cell styles? row 1 column 2/.style values stored in ks but we ignore for layout, just accept
+  // place cells
+  let curY = base.y;
+  const allCenters: Vec2[][] = [];
+  for(let r=0;r<rows.length;r++){
+    let curX = base.x;
+    allCenters[r]=[];
+    for(let c=0;c<ncols;c++){
+      const cw = colWidths[c], rh = rowHeights[r];
+      const center = new Vec2(curX + cw/2, curY - rh/2);
+      allCenters[r][c]=center;
+      curX += cw + colSep;
+    }
+    curY -= rowHeights[r] + rowSep;
+  }
+  // create nodes
+  const matrixBbox = new BBox();
+  let hasAny=false;
+  for(let r=0;r<rows.length;r++){
+    for(let c=0;c<ncols;c++){
+      const txt = cellTexts[r][c];
+      const box = cellBoxes[r][c];
+      const center = allCenters[r][c];
+      const isEmpty = !txt;
+      if(isEmpty && !nodesInEmptyCells) continue;
+      const actualBox = box ?? {width:10,height:6,depth:2};
+      const dims = computeNodeDimensions(actualBox as any, { shape:"rectangle", draw:false, fill:null, drawColor:null, lineWidthPt:0.4, innerSepPt:3, outerSepPt:0.5, align:"center", anchor:"center", rotate:0, transformShape:false, font, text: txt, isCoordinate:false } as any);
+      const bbox = getShape("rectangle").computeBBox(center, dims.halfW, dims.halfH, 0.5);
+      const nodeName = `${mName}-${r+1}-${c+1}`;
+      const entry: NodeEntry = { name: nodeName, center, bbox, shape:"rectangle", halfW:dims.halfW, halfH:dims.halfH, outerSep:0.5, innerSep:3, rotation:0, transformShape:false, textBox: actualBox as any, font, text: txt, anchor:"center" };
+      entries.push(entry);
+      nodes[nodeName]={center,bbox};
+      // apply per-cell style? Look for style row r+1 column c+1 in ks? we just accept without effect: treat as draw if style contains draw
+      const styleKey = `row ${r+1} column ${c+1}`;
+      const styleVal = ks.getStyle(styleKey);
+      if(styleVal && styleVal.toLowerCase().includes("draw")) (entry as any)._stroke={color:"#000000", widthPt:0.4, cap:"butt", join:"miter", miterLimit:10, dash:null, dashPhasePt:0, opacity:1};
+      for(const d of nodeToDisplayItems(entry)) items.push(d);
+      matrixBbox.addBBox(bbox);
+      hasAny=true;
+    }
+  }
+  // matrix node itself
+  if(hasAny){
+    const matEntry: NodeEntry = { name: mName, center: new Vec2((matrixBbox.minX+matrixBbox.maxX)/2, (matrixBbox.minY+matrixBbox.maxY)/2), bbox: matrixBbox, shape:"rectangle", halfW:(matrixBbox.maxX-matrixBbox.minX)/2, halfH:(matrixBbox.maxY-matrixBbox.minY)/2, outerSep:0, innerSep:0, rotation:0, transformShape:false, textBox:{width:0,height:0,depth:0}, font, text:"", anchor:"center" };
+    entries.push(matEntry);
+    nodes[mName]={center: matEntry.center, bbox: matrixBbox};
+  }
+  return {items,nodes,entries};
+}
+
+async function evaluateGraph(
+  stmt: import("../parser/index.ts").GraphStatement,
+  named: Map<string, Vec2>,
+  nodeEntries: Map<string, NodeEntry>,
+  macros: Map<string, string>,
+  transform: Affine,
+  errors: EvalError[],
+  ks: ReturnType<typeof getKeySystem>,
+): Promise<{items: DisplayItem[], entries: NodeEntry[]}> {
+  const items: DisplayItem[] = [];
+  const entries: NodeEntry[] = [];
+  const raw = stmt.raw ?? "";
+  // Determine layout kind from options
+  const optsRaw = stmt.options.map(o=>o.raw).join(",") + "," + stmt.options.map(o=>o.key).join(",");
+  const low = optsRaw.toLowerCase();
+  let layoutKind = "circular";
+  if(low.includes("layered")||low.includes("sugiyama")) layoutKind="layered";
+  else if(low.includes("spring")||low.includes("force")) layoutKind="spring";
+  else if(low.includes("tree")) layoutKind="tree";
+  else if(low.includes("circular")) layoutKind="circular";
+  else if(low.includes("graph drawing")) layoutKind="layered";
+  // parse nodes/edges via lexer on raw
+  const { tokens } = lex(raw);
+  const nodeIdsSet = new Set<string>();
+  const edges: {from:string,to:string, opts: import("../parser/index.ts").Option[]}[] = [];
+  // track group braces
+  let idx=0;
+  const peekTok = (off=0)=> tokens[idx+off];
+  let prevId: string | null = null;
+  let pendingOp: string | null = null; // "->" or "--"
+  let pendingEdgeOpts: import("../parser/index.ts").Option[] = [];
+  while(idx<tokens.length){
+    const tok = tokens[idx];
+    if(tok.kind==="ident"){
+      const id = tok.text;
+      // treat as node id if not a keyword like "complete" etc. For generators like "complete 3" we skip but add nodes
+      if(["graph","complete","cycle","grid","path","star"].includes(id.toLowerCase())){
+        // generators: expand to few nodes
+        if(id.toLowerCase()==="complete"){
+          // next token may be number
+          let n=3;
+          const nxt=tokens[idx+1];
+          if(nxt && nxt.kind==="number") n=parseInt(nxt.text,10);
+          for(let k=0;k<n;k++){ const genId=`c${k}`; nodeIdsSet.add(genId); if(prevId) edges.push({from:prevId,to:genId, opts:[]}); }
+          idx+= (nxt?.kind==="number")?2:1;
+          prevId=null;
+          continue;
+        }
+        idx++; continue;
+      }
+      nodeIdsSet.add(id);
+      if(pendingOp && prevId){
+        edges.push({from:prevId,to:id, opts: pendingEdgeOpts});
+        // for chain, set prev to current id for next chain
+        prevId = id;
+        pendingOp=null; pendingEdgeOpts=[];
+      } else {
+        // Check if next op is arrow to combine? Keep prev for next iteration if pending edge pending without target yet
+        // If we are at start of chain and no pendingOp, set prevId if next token is op
+        const nxt = tokens[idx+1];
+        if(nxt && (nxt.text==="->"||nxt.text==="--"||nxt.kind==="op" && nxt.text==="->")){
+          prevId = id;
+        } else if(!prevId){
+          prevId=id;
+        } else {
+          // isolated node without edge, keep prev?
+        }
+      }
+      idx++;
+      continue;
+    }
+    if(tok.kind==="op" && (tok.text==="->"||tok.text==="--")){
+      pendingOp = tok.text;
+      pendingEdgeOpts=[];
+      // check if next tokens are [options] before target
+      if(tokens[idx+1]?.kind==="lbracket"){
+        let j=idx+1;
+        let rawOpt="";
+        let depth=0;
+        while(j<tokens.length){
+          if(tokens[j].kind==="lbracket") depth++;
+          else if(tokens[j].kind==="rbracket"){ depth--; if(depth===0){ j++; break; } }
+          rawOpt+=tokens[j].text;
+          j++;
+        }
+        pendingEdgeOpts.push({ raw: rawOpt, key: rawOpt, value: undefined, loc:{line:1,column:1,pos:0}} as any);
+        idx=j;
+        continue;
+      }
+      idx++; continue;
+    }
+    if(tok.kind==="lbracket"){
+      // edge options before node? already handled
+      let j=idx;
+      let depth=0;
+      while(j<tokens.length){
+        if(tokens[j].kind==="lbracket") depth++;
+        else if(tokens[j].kind==="rbracket"){ depth--; if(depth===0){ j++; break; } }
+        j++;
+      }
+      idx=j; continue;
+    }
+    if(tok.kind==="lbrace"){
+      // group { c, d }
+      // collect inner idents until matching rbrace
+      let j=idx+1;
+      let depth=1;
+      const groupIds:string[]=[];
+      while(j<tokens.length && depth>0){
+        const t2=tokens[j];
+        if(t2.kind==="lbrace") depth++;
+        else if(t2.kind==="rbrace"){ depth--; if(depth===0) break; }
+        else if(t2.kind==="ident"){ groupIds.push(t2.text); nodeIdsSet.add(t2.text); }
+        j++;
+      }
+      if(pendingOp && prevId){
+        for(const gid of groupIds) edges.push({from:prevId,to:gid, opts: pendingEdgeOpts});
+        // Do not change prevId to single? Keep as prev for chain maybe to first group id?
+        if(groupIds.length===1) prevId=groupIds[0];
+      } else {
+        // just nodes group without op
+      }
+      pendingOp=null; pendingEdgeOpts=[];
+      idx=j+1; continue;
+    }
+    if(tok.kind==="comma"||tok.kind==="semi"){
+      pendingOp=null; pendingEdgeOpts=[]; prevId=null; idx++; continue;
+    }
+    idx++;
+  }
+  const ids = Array.from(nodeIdsSet);
+  if(ids.length===0) return {items, entries};
+  // layout positions
+  const edgePairs:[string,string][] = edges.map(e=>[e.from,e.to]);
+  const posMap = layoutForOptions(layoutKind, ids, edgePairs, new Vec2(0,0));
+  // transform positions by current transform
+  for(const id of ids){
+    const rawPos = posMap.get(id);
+    if(!rawPos) continue;
+    const center = transform.apply(rawPos);
+    const box = await defaultEngine.measure(id, defaultFont(), {});
+    const dims = computeNodeDimensions(box as any, { shape:"circle", draw:true, fill:null, drawColor:"#000", lineWidthPt:0.4, innerSepPt:3, outerSepPt:0.5, align:"center", anchor:"center", rotate:0, transformShape:false, font: defaultFont(), text:id, isCoordinate:false } as any);
+    // Use circle shape for graph nodes default
+    const bbox = getShape("circle").computeBBox(center, dims.halfW, dims.halfH, 0.5);
+    const entry: NodeEntry = { name:id, center, bbox, shape:"circle", halfW:dims.halfW, halfH:dims.halfH, outerSep:0.5, innerSep:3, rotation:0, transformShape:false, textBox:box as any, font: defaultFont(), text:id, anchor:"center" };
+    (entry as any)._stroke={color:"#000000", widthPt:0.4, cap:"butt", join:"miter", miterLimit:10, dash:null, dashPhasePt:0, opacity:1};
+    entries.push(entry);
+  }
+  // edges as paths after nodes exist for border calc
+  for(const e of edges){
+    const fromEntry = entries.find(en=>en.name===e.from);
+    const toEntry = entries.find(en=>en.name===e.to);
+    if(!fromEntry||!toEntry) continue;
+    const pBorder = getBorderPoint(fromEntry, toEntry.center);
+    const tBorder = getBorderPoint(toEntry, fromEntry.center);
+    const segs: PathSegment[] = [{ kind:"moveTo", to:pBorder }, { kind:"lineTo", to:tBorder }];
+    const isDirected = true; // for -> assume directed
+    items.push({ kind:"path", segments: segs, stroke:{ color:"#000000", widthPt:0.6, cap:"butt", join:"miter", miterLimit:10, dash:null, dashPhasePt:0, opacity:1 }, fill:null, isClosed:false } as any);
+    if(isDirected){
+      // add arrow head via simple triangle
+      const dir = tBorder.sub(pBorder).norm();
+      const tip = tBorder;
+      const base = tip.sub(dir.scale(6));
+      const perp = dir.perp().scale(3);
+      const pts: PathSegment[] = [{ kind:"moveTo", to: tip }, { kind:"lineTo", to: base.add(perp)}, { kind:"lineTo", to: base.sub(perp)}, { kind:"close"}];
+      items.push({ kind:"path", segments: pts, stroke:null, fill:{ color:"#000000", opacity:1, rule:"nonzero"}, isClosed:true } as any);
+    }
+  }
+  // node items after edges
+  for(const en of entries){
+    for(const d of nodeToDisplayItems(en)) items.push(d);
+  }
+  return {items, entries};
 }
 
 export function parseDimension(s: string): number {

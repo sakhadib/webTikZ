@@ -21,6 +21,7 @@ import { layoutForOptions, circularLayout, layeredLayout, springLayout, treeLayo
 import { lex } from "../lexer/index.ts";
 import { parseAxisConfig, generateAxisItems } from "../plots/index.ts";
 import type { AxisStatement, AddPlotStatement } from "../parser/index.ts";
+import { createArrowSegments } from "../arrows/index.ts";
 
 export const fadingRegistry = new Map<string, string>();
 export let tdplotTheta = 26.565;
@@ -536,7 +537,6 @@ async function evaluatePicture(
             const res = await evaluatePath({ ...inner, options: remainingOpts }, localNamed, localMacros, nt, nct, errors, nodeEntries, ks);
             if (res) { scopeItems.push(res.item); for (const ex of res.extra) scopeItems.push(ex); for (const ni of res.nodeItems) scopeItems.push(ni); }
           } else if (inner.kind === "tikzset") {
-            const { handleTikzSet } = require("../keys/index.ts");
             handleTikzSet(inner.arg, inner.loc);
           } else if (inner.kind === "definecolor") {
             defineColor(inner.name, inner.model, inner.value);
@@ -2215,7 +2215,6 @@ function applyArrowAndShorten(res:any, opts:Option[], item:any){
   if(arrowSpecs.length>0){
     // Create simple extra heads for first spec as demo
     try{
-      const { createArrowSegments } = require("../arrows/index.ts");
       // Use last segment direction for end arrow
       const segs=item.segments as PathSegment[];
       if(segs && segs.length>=2){

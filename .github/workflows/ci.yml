@@ -53,7 +53,10 @@ jobs:
           ls -lh dist/
 
       - name: Generate types (best-effort)
-        run: npx tsc --emitDeclarationOnly --declaration --outDir dist --allowImportingTsExtensions false 2>&1 | head -20 || echo "::warning ::types generation skipped"
+        continue-on-error: true
+        run: |
+          npx tsc --emitDeclarationOnly --declaration --outDir dist 2>&1 | head -30 || true
+          echo "types best-effort done"
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -15,9 +15,24 @@ canvas{image-rendering:-webkit-optimize-contrast}
 .example-canvas{border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(0,0,0,.06);background:#fff}
 .prose pre{white-space:pre-wrap}
 </style>
-<!-- WebTikZ — try docs-relative then site-relative -->
-<script src="../dist/webtikz.min.js"></script>
-<script>if(typeof WebTikZ==="undefined"){document.write('<script src="dist/webtikz.min.js"><\/script>')}</script>
+<!-- WebTikZ — robust loader for both docs/ and _site/ contexts -->
+<script>
+(function(){
+  function load(src, onOk, onErr){
+    var s=document.createElement('script'); s.src=src;
+    s.onload=function(){ if(typeof WebTikZ!=='undefined') onOk&&onOk(); else onErr&&onErr(); };
+    s.onerror=function(){ onErr&&onErr(); };
+    document.head.appendChild(s);
+  }
+  load('../dist/webtikz.min.js', function(){}, function(){
+    load('dist/webtikz.min.js', function(){}, function(){
+      load('/dist/webtikz.min.js', function(){}, function(){
+        console.warn('WebTikZ not loaded — run npm run build');
+      });
+    });
+  });
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
 </head>
@@ -66,7 +81,7 @@ canvas{image-rendering:-webkit-optimize-contrast}
   \draw[help lines] (0,0) grid (4,3);
   \node[circle, draw, fill=blue!20] (a) at (0.8,1.5) {$x_1$};
   \node[draw, right=2cm of a] (b) {Output};
-  \draw[->, thick] (a) to[bend left] node[above] {weight} (b);
+  \draw[->, thick] (a) to[bend left=22] (b);
   \draw[decorate, decoration={brace, amplitude=4pt, mirror}] (0,0) -- (4,0) node[midway, below=4pt]{\tiny 4cm};
 \end{tikzpicture}</textarea>
         <div class="p-3 bg-zinc-50 flex flex-col items-center justify-center min-h-[280px]">
@@ -350,12 +365,13 @@ EXAMPLES.forEach((ex, idx)=>{
   if(window.Prism) Prism.highlightAllUnder(pre);
 });
 
-// hero editor wiring
+// hero editor wiring — polls for WebTikZ (async loader)
 (async function hero(){
-  const W = globalThis.WebTikZ; if(!W) return;
   const ed=document.getElementById('hero-editor'), cv=document.getElementById('hero-canvas'), errEl=document.getElementById('hero-errors');
   let last=null, t=0;
   async function render(){
+    const W = globalThis.WebTikZ;
+    if(!W || !W.render){ errEl.textContent='WebTikZ loading…'; return; }
     try{
       const pic = await W.render(ed.value, cv, {scale:1.4, dpr: window.devicePixelRatio||1});
       last=pic;

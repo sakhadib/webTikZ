@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.7.0 — **Phase 7 (Structured Diagrams)** complete — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~46 KB gz (Phase 7, 153 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/parser/index.ts:63` (matrix/graph), `src/core/evaluator.ts:17` (matrix/tree/graph), `src/graphDrawing/index.ts:1`
-> **Tests:** 457 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.8.0 — **Phase 8 (Advanced Rendering & 3D)** — 0.8 Release — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~49 KB gz (Phase 8, 164 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/parser/index.ts:372` (3D/z), `src/core/evaluator.ts:2221` (3D projection), `src/render/canvas.ts:70` (fading/blend/shadow), `src/render/displayList.ts:41`
+> **Tests:** 496 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + Phase 8: 39 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 7**. Anything tagged Phase 8+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 8**. Anything tagged Phase 9+ is *not yet implemented* and will error or be ignored.
 
 ---
 
@@ -288,7 +288,9 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 5 Composition | **Done 2026-09-11** | 38 KB gz | 50 tests; pics, quotes, edge/to path, plot, fit, backgrounds, layers, shape libs, through, PGF basic — **Core 0.5** |
 | 6 Decorations | **Done 2026-09-11** | 43 KB gz | 45 tests; automaton, pathmorphing, pathreplacing, markings, text/footprints/fractals |
 | 7 Structured diagrams | **Done 2026-09-11** | 46 KB gz | 50 tests; matrix, trees, graphs, automata/mindmap, graph drawing (circular/layered/spring/RT) |
-| 8 Advanced rendering & 3D | TODO | < ? | fadings, transparency, shadows, 3D, spy |
+| 8 Advanced rendering & 3D | **Done 2026-09-11** | 49 KB gz | 39 tests; fadings, transparency/blend, shadows, 3D/tdplot/spy, includegraphics, transform canvas — **Release 0.8** |
+| 9 Plotting (pgfplots-lite) | TODO | < ? | axis, addplot, 3D surf |
+| 10 Web-native | TODO | < ? | interactivity, animation, theming |
 | … | … | … | … |
 
 *Build:* `npm run build` → `dist/webtikz.js` (IIFE), `dist/webtikz.mjs` (ESM). Size budget enforced in CI — `plan.md:223`.
@@ -1010,3 +1012,77 @@ Keys `state/initial/accepting/loop/chain/concept` accepted as styles; visual mat
 ---
 
 **For AI (updated for Phase 7):** For tables use `\matrix[matrix of nodes,row sep,column sep] {a & b\\ c & d}` and reference `m-1-2`. For hierarchies use `node {root} child {node {leaf}}` with `level distance`/`sibling distance`/`grow`. For networks use `\graph {a -> b -> {c,d}}` and add `spring layout`/`layered layout`/`circular layout` for auto-placement — significantly easier than TikZ (no LuaTeX needed). For FSM use `automata` `state/initial/accepting` + `edge[loop above]`. Still no `fadings/3D/spy` (Phase 8) — for those approximate with `opacity`/`shadings`.
+
+---
+
+## 17. Phase 8 — Advanced Rendering & 3D — **NEW in 0.8.0 (Release 0.8)**
+
+> **Scope:** `src/parser/index.ts:372`, `src/core/evaluator.ts:2221`/`307`, `src/render/displayList.ts:41`, `src/render/canvas.ts:70`
+> **Tests:** 39 (`tests/unit/phase8.test.ts:1`) — 496 total
+
+Phase 8 covers visual effects that need offscreen compositing and 3D projection.
+
+### 17.1 Fadings — `src/render/canvas.ts:70`, `src/core/evaluator.ts:307`
+
+```tex
+\usetikzlibrary{fadings}
+\tikzfading[name=fadeOut, inner color=transparent!0, outer color=transparent!100]
+\fill[path fading=fadeOut, fit fading=false] (0,0) rectangle (2,1);
+\begin{scope}[scope fading=south] \fill[red] (0,0) rectangle (2,2); \end{scope}
+\fill[path fading=south, fading angle=45] (0,0) circle (1cm);
+```
+
+Implemented via offscreen `globalAlpha` mask in `drawItem`; `fading angle` rotates mask.
+
+### 17.2 Transparency & Blend — `src/render/canvas.ts:70`
+
+```tex
+\begin{scope}[transparency group, opacity=0.5] % grouped alpha
+  \fill[red] (0,0) rectangle (1,1); \fill[blue] (0.5,0) rectangle (1.5,1);
+\end{scope}
+\begin{scope}[blend group=multiply] \fill[red] (0,0) circle (1cm); \fill[blue] (0.5,0) circle (1cm); \end{scope}
+% blend modes: multiply/screen/overlay/darken/lighten etc → globalCompositeOperation
+```
+
+### 17.3 Shadows — `src/core/evaluator.ts:222`
+
+```tex
+\usetikzlibrary{shadows}
+\node[draw, drop shadow={shadow xshift=1mm, shadow yshift=-1mm, opacity=0.5}] at (0,0) {A};
+\node[draw, copy shadow] at (1,0) {B};
+\tikzset{circular drop shadow, circular glow={fill=red!20}}
+```
+
+`drop shadow` cloned as offset `DisplayPath` with shadow color; `copy/circular` variants accepted.
+
+### 17.4 3D — `src/core/evaluator.ts:2221`, `src/parser/index.ts:372`
+
+```tex
+\usetikzlibrary{3d, perspective}
+\begin{tikzpicture}[x={(1cm,0)}, y={(0,1cm)}, z={(0.5cm,0.5cm)}]
+  \draw (0,0,0) -- (1,0,0) -- (1,1,0) -- (0,1,0) -- cycle;
+  \draw (0,0,0) -- (0,0,1);
+\end{tikzpicture}
+% tikz-3dplot shim:
+\tdplotsetmaincoords{70}{110} \begin{tikzpicture}[tdplot_main_coords] \draw (0,0,0) -- (1,0,0); \end{tikzpicture}
+% 3d library:
+\begin{scope}[canvas is xy plane at z=1] \draw (0,0) rectangle (1,1); \end{scope}
+```
+
+`(x,y,z)` parsed as 3D, projected via `project3D` using unit vectors `x/y/z` and `tdplot` theta/phi.
+
+### 17.5 Spy & Images — `src/core/evaluator.ts:627`
+
+```tex
+\usetikzlibrary{spy}
+\begin{tikzpicture}[spy using outlines={circle, magnification=3, size=2cm, connect spies}]
+  \draw (0,0) -- (2,0); \spy on (1,0) in node at (3,0);
+\end{tikzpicture}
+\node at (0,0) {\includegraphics[width=2cm]{https://example.com/img.png}}; % async placeholder rect + load
+```
+
+Spy clones region as clipped lens; `transform canvas={scale, rotate, shift, xslant}` applied via `ctx.transform` on group and nodes `src/core/evaluator.ts:738`.
+
+---
+
+**For AI (updated for Phase 8 — Release 0.8):** Use `path fading`/`scope fading` + `fading angle` for vignettes, `transparency group` + `blend group=multiply` for compositing, `shadows` `drop shadow` for lifted cards. For 3D use `(x,y,z)` with custom `x/y/z` or `\tdplotsetmaincoords{60}{110}` + `tdplot_main_coords`; for planes use `canvas is xy plane at z=`. For magnifiers use `spy` library; for photos use `\includegraphics[width=…]{url}`. Still no `pgfplots` axis (Phase 9) — for plots use `plot` with `domain/samples` from Phase 5.

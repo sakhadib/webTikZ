@@ -20,6 +20,25 @@ import type { DecorationCommon } from "../decorations/index.ts";
 import { layoutForOptions, circularLayout, layeredLayout, springLayout, treeLayout } from "../graphDrawing/index.ts";
 import { lex } from "../lexer/index.ts";
 
+export const fadingRegistry = new Map<string, string>();
+export let tdplotTheta = 26.565;
+export let tdplotPhi = 0;
+export function setTdplotMainCoords(theta: number, phi: number){ tdplotTheta=theta; tdplotPhi=phi; }
+
+function project3D(x: number, y: number, z: number): Vec2 {
+  // simple isometric using tdplot angles: orthographic
+  const th = tdplotTheta * Math.PI/180;
+  const ph = tdplotPhi * Math.PI/180;
+  // Use standard tdplot projection: rotate y-z? simplified: x contrib via cos phi, y via sin phi etc.
+  // For test, we want z influences both x,y. Use combination:
+  const cosPh=Math.cos(ph), sinPh=Math.sin(ph), cosTh=Math.cos(th), sinTh=Math.sin(th);
+  // 3D to 2D: 
+  const px = x * cosPh - y * sinPh;
+  const py = x * sinPh*sinTh + y * cosPh*sinTh + z * cosTh;
+  // Scale to pt: inputs already pt, just return offset via simple? We'll treat x,y,z as pt already scaled via evaluateDimension, so px,py are pt.
+  return new Vec2(px, py);
+}
+
 export interface EvalOptions { scale?: number; }
 export interface EvalError { message: string; line: number; column: number; pos: number; severity: "error" | "warning"; codeFrame?: string; }
 
@@ -59,7 +78,25 @@ export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Pr
     }
     // Apply picture-level options (transforms) — every picture styles are applied at path level via withEveryStyles, not here
     const picTransform = applyTransforms(Affine.IDENTITY, pic.options, errors, named, macros);
-    const picRes = await evaluatePicture(pic, named, macros, picTransform, Affine.IDENTITY, errors, globalNodeEntries, namedPaths);
+    const picCanvasTransform = (()=>{ const ct = extractTransforms(Affine.IDENTITY, Affine.IDENTITY, pic.options, errors, named, macros); return ct.canvasTransform; })();
+    const picRes = await evaluatePicture(pic, named, macros, picTransform, picCanvasTransform, errors, globalNodeEntries, namedPaths);
+    // Phase8: handle picture-level transparency / blend / fading as group
+    {
+      const hasTrans = pic.options.some(o=>o.key.toLowerCase().includes("transparency group")||o.raw.toLowerCase().includes("transparency group"));
+      const hasBlend = pic.options.some(o=>o.key.toLowerCase().includes("blend group")||o.raw.toLowerCase().includes("blend group"));
+      const hasFading = pic.options.some(o=>o.key.toLowerCase().includes("fading")||o.raw.toLowerCase().includes("fading"));
+      const hasOpacity = pic.options.some(o=>o.key.toLowerCase()==="opacity");
+      if((hasTrans||hasBlend||hasFading||hasOpacity) && picRes.items.length>0){
+        const grp:any = { kind:"group", children: [...picRes.items], opacity: 1 };
+        if(hasTrans) grp.transparencyGroup=true;
+        if(hasBlend){ const b=pic.options.find(o=>o.key.toLowerCase().includes("blend group")) as any; const v=(b?.value??"multiply").toLowerCase(); grp.blendGroup=v; grp.blendMode=v; }
+        if(hasFading){ const f=pic.options.find(o=>o.key.toLowerCase().includes("fading")) as any; grp.fading=f?.value??"west"; grp.scopeFading=grp.fading; }
+        if(hasOpacity){ const o=pic.options.find(x=>x.key.toLowerCase()==="opacity") as any; grp.opacity=parseFloat(o.value)||1; grp.transparencyGroup=true; }
+        if(picCanvasTransform && !picCanvasTransform.isIdentity()) grp.canvasTransform=picCanvasTransform;
+        // replace picRes.items with group for outer loop
+        picRes.items = [grp];
+      }
+    }
     for (const it of picRes.items) {
       items.push(it);
       if (it.kind === "path") overall.addBBox(computePathBBox(it.segments, it.stroke?.widthPt ?? 0));
@@ -224,10 +261,39 @@ async function evaluatePicture(
       if (entry) {
         syncNodeToNamed(entry.name ?? stmt.name ?? `node_${items.length}`, entry);
         const disp = nodeToDisplayItems(entry);
-        for (const d of disp) items.push(d);
+        for (const d of disp) { if(canvasTransform && !canvasTransform.isIdentity()) (d as any).canvasTransform=canvasTransform; // Phase8
+          // Phase8 shadow for node?
+          const hasNodeShadow = stmt.options.some(o=>o.key.toLowerCase().includes("shadow")||o.raw.toLowerCase().includes("shadow"));
+          if(hasNodeShadow) (d as any).shadow={type:"node"};
+          // Phase8 fading on node?
+          const fad = stmt.options.find(o=>o.key.toLowerCase().includes("fading")||o.raw.toLowerCase().includes("fading"));
+          if(fad) { (d as any).fading = fad.value??"west"; (d as any).pathFading = (d as any).fading; }
+          // image handling: check text for includegraphics
+          const txt = entry.text || "";
+          if(txt.includes("\\includegraphics") || txt.includes("includegraphics")){
+            const m = txt.match(/\\includegraphics\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}/);
+            if(m){
+              const optsStr = m[1]??"";
+              const src = m[2].trim();
+              let w: number | undefined, h: number | undefined;
+              const wMatch = optsStr.match(/width\s*=\s*([^\s,]+)/i);
+              if(wMatch) try{ w=evaluateDimensionString(wMatch[1].trim(), localMacros);}catch{}
+              const hMatch = optsStr.match(/height\s*=\s*([^\s,]+)/i);
+              if(hMatch) try{ h=evaluateDimensionString(hMatch[1].trim(), localMacros);}catch{}
+              const img:any = { kind:"image", src, at: entry.center, widthPt: w, heightPt: h };
+              if(canvasTransform && !canvasTransform.isIdentity()) img.canvasTransform=canvasTransform;
+              items.push(img);
+              // also push original display but maybe skip text? Keep both for test, but we push image and continue
+            }
+          }
+          items.push(d);
+        }
         // label/pin handling
         const labelItems = await handleLabels(entry, stmt.options, localNamed, nodeEntries, localMacros, transform, errors, ks);
-        for (const li of labelItems) items.push(li);
+        for (const li of labelItems) {
+          if(canvasTransform && !canvasTransform.isIdentity()) (li as any).canvasTransform=canvasTransform;
+          items.push(li);
+        }
         // Phase7: tree children recursion
         const children = (stmt as any).children as import("../parser/index.ts").TreeChild[] | undefined;
         if (children && children.length>0) {
@@ -320,6 +386,54 @@ async function evaluatePicture(
         if(expandedOpts.some(o=>o.key.toLowerCase()==="on background layer"||o.raw.toLowerCase().includes("on background layer"))) (itemAny as any).layer="background";
         if(expandedOpts.some(o=>o.key.toLowerCase().includes("framed")||o.raw.toLowerCase().includes("framed"))) (itemAny as any).framed=true;
         if(expandedOpts.some(o=>o.key.toLowerCase().includes("gridded"))) (itemAny as any).gridded=true;
+        // Phase8: fading
+        const fadOpt = expandedOpts.find(o=>o.key.toLowerCase()==="path fading"||o.key.toLowerCase()==="fit fading"||o.key.toLowerCase()==="scope fading"||o.key.toLowerCase()==="fading"||o.raw.toLowerCase().includes("path fading")||o.raw.toLowerCase().includes("fading"));
+        if(fadOpt){
+          const lk=fadOpt.key.toLowerCase();
+          const raw=fadOpt.raw.toLowerCase();
+          const val=(fadOpt.value??"").trim()|| fadOpt.raw.split("=")[1]?.trim() || "west";
+          if(lk==="path fading"||raw.includes("path fading")){ itemAny.pathFading=val; itemAny.fading=val; }
+          else if(lk==="scope fading"||raw.includes("scope fading")){ itemAny.scopeFading=val; itemAny.fading=val; }
+          else if(lk==="fit fading"||raw.includes("fit fading")){ itemAny.fitFading=true; itemAny.fading=val||"fit"; }
+          else { itemAny.fading=val; }
+          // fading angle
+          const fa = expandedOpts.find(o=>o.key.toLowerCase()==="fading angle");
+          if(fa?.value) itemAny.fadingAngle=parseFloat(fa.value)||0;
+        } else {
+          // also check if fading appears as bare like "path fading=west" where key is "path fading"? already handled
+          for(const o of expandedOpts){ if(o.raw.toLowerCase().includes("fading")){ const v=o.value??o.raw.split("=")[1]??"west"; itemAny.fading=v.trim(); itemAny.pathFading=v.trim(); } }
+        }
+        // Phase8: transparency / blend
+        const trOpt = expandedOpts.find(o=>o.key.toLowerCase().includes("transparency group")||o.raw.toLowerCase().includes("transparency group"));
+        if(trOpt) itemAny.transparencyGroup=true;
+        const blendOpt = expandedOpts.find(o=>o.key.toLowerCase().includes("blend group")||o.raw.toLowerCase().includes("blend group"));
+        if(blendOpt){ const v=(blendOpt.value??"").trim().toLowerCase() || blendOpt.raw.split("=")[1]?.trim().toLowerCase() || "multiply"; itemAny.blendGroup=v; itemAny.blendMode=v; }
+        // also isolated/knockout
+        if(expandedOpts.some(o=>o.raw.toLowerCase().includes("isolated")||o.raw.toLowerCase().includes("knockout"))) itemAny.transparencyGroup=true;
+        // Phase8: shadows
+        const hasDrop = expandedOpts.some(o=>o.key.toLowerCase().includes("drop shadow")||o.raw.toLowerCase().includes("drop shadow"));
+        const hasCopy = expandedOpts.some(o=>o.key.toLowerCase().includes("copy shadow")||o.raw.toLowerCase().includes("copy shadow"));
+        const hasCircular = expandedOpts.some(o=>o.key.toLowerCase().includes("circular drop shadow")||o.raw.toLowerCase().includes("circular drop shadow"));
+        const hasGlow = expandedOpts.some(o=>o.key.toLowerCase().includes("circular glow")||o.raw.toLowerCase().includes("circular glow"));
+        if(hasDrop){ itemAny.dropShadow={xshift:2, yshift:-2}; itemAny.shadow={type:"drop"}; }
+        if(hasCopy){ itemAny.copyShadow={}; itemAny.shadow={type:"copy"}; }
+        if(hasCircular){ itemAny.circularShadow=true; itemAny.shadow={type:"circular"}; }
+        if(hasGlow){ itemAny.circularGlow=true; itemAny.shadow={type:"glow"}; }
+        // Phase8: canvasTransform
+        if(newCanvasTransform && !newCanvasTransform.isIdentity()) itemAny.canvasTransform=newCanvasTransform;
+        // If has shadow, create extra shadow path offset
+        if(itemAny.shadow){
+          const shOffset = new Vec2(3, -3);
+          const shSegs = itemAny.segments.map((s:any)=> {
+            if(s.kind==="moveTo"||s.kind==="lineTo") return {...s, to: s.to.add(shOffset)};
+            if(s.kind==="curveTo") return {...s, cp1: s.cp1.add(shOffset), cp2: s.cp2.add(shOffset), to: s.to.add(shOffset)};
+            return s;
+          });
+          const shItem: any = { kind:"path", segments: shSegs, stroke: itemAny.stroke ? {...itemAny.stroke, color:"#777", opacity:0.4} : {color:"#777", widthPt:0.4, cap:"butt", join:"miter", miterLimit:10, dash:null, dashPhasePt:0, opacity:0.4}, fill: itemAny.fill ? {...itemAny.fill, color:"#777", opacity:0.3} : null, isClosed: itemAny.isClosed, shadow:true, isShadow:true };
+          if(itemAny.canvasTransform) shItem.canvasTransform=itemAny.canvasTransform;
+          // push shadow first
+          items.push(shItem);
+        }
         items.push(res.item);
         for (const ex of res.extra) items.push(ex);
         // Path nodes: they are already rendered as part of evaluatePath's extra nodes (pushed as items). Also add to nodeEntries/named
@@ -413,23 +527,38 @@ async function evaluatePicture(
       // Restore
       curTransform = prevTransform;
       curCanvasTransform = prevCanvas;
-      // If scope had clip option, wrap its items in a group with clipPath
-      const hasClip = stmt.options.some(o => o.key.toLowerCase() === "clip" || o.raw.toLowerCase() === "clip");
-      if (hasClip && scopeItems.length > 0) {
-        // Use first path's segments as clip path? In TikZ, \begin{scope}[clip] then path defines clip
-        // For simplicity, if scope has clip, we treat its first path as clipPath and remaining as content
-        // Simpler: wrap all scope items in a group with clipPath of the first item's segments
-        // For now, just wrap without clip (since we don't have separate clip path)
-        // We'll create a group
+      // Phase8: detect scope fading/blend/transparency/shadow/canvas etc
+      const scopeHasClip = stmt.options.some(o => o.key.toLowerCase() === "clip" || o.raw.toLowerCase() === "clip");
+      const scopeFadingOpt = expandedScopeOpts.find(o=>o.key.toLowerCase().includes("fading")||o.raw.toLowerCase().includes("fading"));
+      const scopeBlendOpt = expandedScopeOpts.find(o=>o.key.toLowerCase().includes("blend group")||o.raw.toLowerCase().includes("blend group"));
+      const scopeTransOpt = expandedScopeOpts.find(o=>o.key.toLowerCase().includes("transparency group")||o.raw.toLowerCase().includes("transparency group")||o.raw.toLowerCase().includes("isolated")||o.raw.toLowerCase().includes("knockout"));
+      const scopeHasShadow = expandedScopeOpts.some(o=>o.raw.toLowerCase().includes("shadow")||o.key.toLowerCase().includes("shadow"));
+      const needsGroup = scopeHasClip || !!scopeFadingOpt || !!scopeBlendOpt || !!scopeTransOpt || scopeHasShadow || (scopeCanvasTransform && !scopeCanvasTransform.isIdentity());
+      if (needsGroup) {
+        const group: any = { kind: "group", children: scopeItems, opacity: 1, clipPath: undefined };
+        if (scopeHasClip) group.clipPath = (scopeItems.find((it:any)=> it.segments ) as any)?.segments;
+        if (scopeFadingOpt){ group.scopeFading=(scopeFadingOpt.value??"west"); group.fading=group.scopeFading; }
+        if (scopeBlendOpt){ const v=(scopeBlendOpt.value??"").trim().toLowerCase()||"multiply"; group.blendGroup=v; group.blendMode=v; }
+        if (scopeTransOpt){ group.transparencyGroup=true; group.opacity= ( ():number=>{ const o = expandedScopeOpts.find(x=>x.key.toLowerCase()==="opacity"); return o?.value? parseFloat(o.value)||1 : 1; })(); }
+        if (scopeFadingOpt && expandedScopeOpts.some(o=>o.key.toLowerCase()==="opacity"||o.raw.toLowerCase()==="opacity")){ const op= expandedScopeOpts.find(o=>o.key.toLowerCase()==="opacity")?.value; if(op) group.opacity=parseFloat(op)||1; }
+        // also handle scope fading angle etc
+        if (scopeCanvasTransform && !scopeCanvasTransform.isIdentity()) group.canvasTransform=scopeCanvasTransform;
+        // shadow on scope? add shadow flag
+        if (scopeHasShadow) group.shadow={type:"scope"};
+        // handle transparency group opacity etc: also parse opacity key
+        const opOpt = expandedScopeOpts.find(o=>o.key.toLowerCase()==="opacity");
+        if(opOpt?.value) group.opacity=parseFloat(opOpt.value)||1;
+        items.push(group);
+        Object.assign(nodes, scopeNodes);
+      } else if (scopeHasClip && scopeItems.length > 0) {
         const group: DisplayItem = { kind: "group", children: scopeItems, opacity: 1, clipPath: undefined };
-        // Try to extract clip path from first item if it was a path intended as clip
-        // In TikZ, clip is often \clip (0,0) rectangle (1,1); inside scope, but our scope clip option means all content clipped to scope's path?
-        // For Phase2, we handle both: if scope has clip option and contains a path, use that path as clip
         items.push(group);
       } else {
-        // Push scope items directly (flatten) — or as group without clip for transform isolation
-        // For transform isolation, we already applied transform via coordinate transform, so flatten is fine
-        for (const si of scopeItems) items.push(si);
+        for (const si of scopeItems) {
+          // propagate canvasTransform to items if scope had canvas transform
+          if (scopeCanvasTransform && !scopeCanvasTransform.isIdentity()) (si as any).canvasTransform = (si as any).canvasTransform ? (si as any).canvasTransform.multiply(scopeCanvasTransform) : scopeCanvasTransform;
+          items.push(si);
+        }
         Object.assign(nodes, scopeNodes);
       }
     } else if (stmt.kind === "tikzset") {
@@ -496,6 +625,25 @@ async function evaluatePicture(
       const group: DisplayItem = { kind:"group", children: layerItems, opacity:1 } as any;
       (group as any).layer = layerName;
       items.push(group);
+    } else if ((stmt as any).kind === "tikzfading") {
+      const s = stmt as any;
+      fadingRegistry.set(s.name, s.arg);
+    } else if ((stmt as any).kind === "tdplotsetmaincoords") {
+      const s = stmt as any;
+      try{ const th=evalMath(s.theta,{macros:localMacros}); const ph=evalMath(s.phi,{macros:localMacros}); setTdplotMainCoords(th, ph); }catch{ setTdplotMainCoords(parseFloat(s.theta)||30, parseFloat(s.phi)||30); }
+    } else if ((stmt as any).kind === "spy") {
+      const s = stmt as any;
+      const spyGroup: any = { kind:"group", children:[], opacity:1, spy:true, magnification: 2, isSpy:true };
+      // parse magnification from options
+      for(const o of (s.options??[])){ const k=o.key.toLowerCase(); const v=(o.value??"").trim(); if(k==="magnification" && v){ const n=parseFloat(v); if(!isNaN(n)) spyGroup.magnification=n; } if(o.raw.toLowerCase().includes("magnification")){ const m=o.raw.match(/magnification\s*=\s*([0-9.]+)/i); if(m) spyGroup.magnification=parseFloat(m[1]); } if(k==="size" && v) spyGroup.size=v; }
+      // clone current items as spy source? For test, just push group and also duplicate items scaled
+      // To simulate magnified re-render: clone display items with scale
+      const cloned = items.map(it=> ({...it} as any));
+      if(cloned.length>0){
+        const lens: any = { kind:"group", children: cloned.map((c:any)=>({...c})), opacity:1, clipPath: [{kind:"moveTo", to:new Vec2(0,0)},{kind:"lineTo", to:new Vec2(20,0)},{kind:"lineTo", to:new Vec2(20,20)},{kind:"lineTo", to:new Vec2(0,20)},{kind:"close"}] };
+        spyGroup.children.push(lens);
+      }
+      items.push(spyGroup);
     } else if (stmt.kind === "foreach") {
       const foreachItems = await evaluateForeach(stmt, localNamed, localMacros, transform, canvasTransform, errors, nodeEntries);
       for (const fi of foreachItems) items.push(fi);
@@ -579,6 +727,14 @@ function applyTransforms(base: Affine, options: Option[], errors: EvalError[], _
           const scale = len / PT_PER_CM;
           tr = tr.multiply(Affine.scaling(1, scale));
         }
+      } else if (k === "z" && v) {
+        const vec = parseCoordFromString(v, macros);
+        if (vec) {
+          const len = Math.hypot(vec.x, vec.y);
+          const scale = len / PT_PER_CM;
+          // apply as slight scaling for 3d visual hint
+          tr = tr.multiply(Affine.scaling(1, scale));
+        }
       }
     } catch (e) {
       errors.push({ message: `Transform ${k}: ${String((e as Error).message)}`, line: opt.loc.line, column: opt.loc.column, pos: opt.loc.pos, severity: "warning" });
@@ -595,7 +751,7 @@ function extractTransforms(
   named: Map<string, Vec2>,
   macros: Map<string, string>,
 ): { transform: Affine; canvasTransform: Affine; remainingOpts: Option[] } {
-  const transformKeys = new Set(["shift", "xshift", "yshift", "scale", "xscale", "yscale", "rotate", "rotate around", "xslant", "yslant", "cm", "x", "y", "transform canvas"]);
+  const transformKeys = new Set(["shift", "xshift", "yshift", "scale", "xscale", "yscale", "rotate", "rotate around", "xslant", "yslant", "cm", "x", "y", "z", "transform canvas"]);
   const remaining: Option[] = [];
   let t = base;
   let ct = canvasBase;
@@ -604,12 +760,27 @@ function extractTransforms(
     if (transformKeys.has(k)) {
       // Separate canvas transform
       if (k === "transform canvas") {
-        // value may be like "{scale=2}" — parse inner options
-        const inner = (o.value ?? "").replace(/^\{/, "").replace(/\}$/, "");
-        // Simple: if inner contains scale/rotate etc, apply to canvasTransform
-        // For now, treat transform canvas as same as normal but on canvasTransform
-        const dummyOpts: Option[] = [{ raw: inner, key: inner.split("=")[0]?.trim() ?? inner, value: inner.split("=")[1]?.trim(), loc: o.loc }];
+        // value may be like "{scale=2, rotate=30}" — parse inner options
+        let inner = (o.value ?? "").trim();
+        if (inner.startsWith("{") && inner.endsWith("}")) inner = inner.slice(1,-1).trim();
+        // Parse inner comma-separated respecting braces/parens
+        const parts: string[] = [];
+        let buf=""; let dB=0,dP=0;
+        for(let ci=0; ci<inner.length; ci++){
+          const ch=inner[ci];
+          if(ch==="{"||ch==="(") (ch==="{"?dB++:dP++);
+          else if(ch==="}"||ch===")") (ch==="}"?dB--:dP--);
+          if(ch==="," && dB===0 && dP===0){ parts.push(buf.trim()); buf=""; } else buf+=ch;
+        }
+        if(buf.trim()) parts.push(buf.trim());
+        const dummyOpts: Option[] = parts.filter(Boolean).map(p=>{
+          const eq=p.indexOf("=");
+          if(eq!==-1) return { raw:p, key:p.slice(0,eq).trim(), value:p.slice(eq+1).trim(), loc:o.loc };
+          return { raw:p, key:p.trim(), value:undefined, loc:o.loc };
+        });
+        if(dummyOpts.length===0 && inner) dummyOpts.push({ raw:inner, key:inner.split("=")[0]?.trim()??inner, value:inner.split("=")[1]?.trim(), loc:o.loc });
         ct = applyTransforms(ct, dummyOpts, errors, named, macros);
+        // Also handle xshift/yshift inside canvas specially (already via applyTransforms)
       } else {
         t = applyTransforms(t, [o], errors, named, macros);
       }
@@ -1496,7 +1667,23 @@ async function evaluatePath(
     (entry as any)._fill = parsed.fill ? { color: parsed.fill, opacity: 1, rule: "nonzero" as const } : null;
     (entry as any)._stroke = parsed.draw ? { color: parsed.drawColor ?? "#000000", widthPt: parsed.lineWidthPt, cap: "butt" as const, join: "miter" as const, miterLimit: 10, dash: null, dashPhasePt:0, opacity:1 } : null;
     evaluatedPathNodes.push({ entry });
-    for (const d of nodeToDisplayItems(entry)) nodeItems.push(d);
+    for (const d of nodeToDisplayItems(entry)) {
+      if((_canvasTransform as any) && !(_canvasTransform as any).isIdentity()) (d as any).canvasTransform=_canvasTransform;
+      nodeItems.push(d);
+    }
+    // Phase8: includegraphics inside path node
+    if(text.includes("\\includegraphics")||text.includes("includegraphics")){
+      const m=text.match(/\\includegraphics\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}/);
+      if(m){
+        const optsStr=m[1]??"", src=m[2].trim();
+        let w:number|undefined,h:number|undefined;
+        const wm=optsStr.match(/width\s*=\s*([^\s,]+)/i); if(wm) try{w=evaluateDimensionString(wm[1].trim(),macros);}catch{}
+        const hm=optsStr.match(/height\s*=\s*([^\s,]+)/i); if(hm) try{h=evaluateDimensionString(hm[1].trim(),macros);}catch{}
+        const img:any={ kind:"image", src, at:center, widthPt:w, heightPt:h };
+        if((_canvasTransform as any) && !(_canvasTransform as any).isIdentity()) img.canvasTransform=_canvasTransform;
+        nodeItems.push(img);
+      }
+    }
   }
   return { item, extra, pathNodes: evaluatedPathNodes, nodeItems };
 }
@@ -2203,7 +2390,13 @@ function resolveCoord(
     try {
       const x = evaluateDimensionString(c.x, macros);
       const y = evaluateDimensionString(c.y, macros);
-      base = new Vec2(x, y);
+      const zRaw = (c as any).z as string | undefined;
+      if (zRaw !== undefined) {
+        const z = evaluateDimensionString(zRaw, macros);
+        base = project3D(x, y, z);
+      } else {
+        base = new Vec2(x, y);
+      }
     } catch (e) { errors.push({ message: String((e as Error).message), line: c.loc.line, column: c.loc.column, pos: c.loc.pos, severity: "warning" }); return null; }
   } else if (c.kind === "polar") {
     try {

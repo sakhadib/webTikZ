@@ -6,7 +6,7 @@ export interface Loc { line: number; column: number; pos: number; }
 export type Option = { raw: string; key: string; value?: string; loc: Loc };
 
 export type Coordinate =
-  | { kind: "cartesian"; x: string; y: string; loc: Loc; relative: "plus" | "plusplus" | null }
+  | { kind: "cartesian"; x: string; y: string; z?: string; loc: Loc; relative: "plus" | "plusplus" | null }
   | { kind: "polar"; angle: string; radius: string; loc: Loc; relative: "plus" | "plusplus" | null }
   | { kind: "named"; name: string; anchor?: string; loc: Loc; relative: "plus" | "plusplus" | null }
   | { kind: "calc"; expr: string; loc: Loc; relative: "plus" | "plusplus" | null }
@@ -160,7 +160,10 @@ export type PgfLayerStatement = { kind: "pgflayer"; name: string; loc: Loc };
 export type PgfDeclareLayerStatement = { kind: "pgfdeclarelayer"; name: string; loc: Loc };
 export type PgfSetLayersStatement = { kind: "pgfsetlayers"; names: string[]; loc: Loc };
 export type PgfBasicStatement = { kind: "pgf"; text: string; loc: Loc };
-export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement | PgfLayerStatement | PgfDeclareLayerStatement | PgfSetLayersStatement | PgfBasicStatement | MatrixStatement | GraphStatement;
+export type TikzFadingStatement = { kind: "tikzfading"; name: string; arg: string; loc: Loc };
+export type TdplotStatement = { kind: "tdplotsetmaincoords"; theta: string; phi: string; loc: Loc };
+export type SpyStatement = { kind: "spy"; options: Option[]; raw: string; loc: Loc };
+export type PictureBodyItem = PathStatement | CoordinateStatement | NodeStatement | ScopeStatement | TikzSetStatement | DefineColorStatement | ColorLetStatement | DefStatement | LetStatement | PgfMathSetMacroStatement | ForeachStatement | PgfLayerStatement | PgfDeclareLayerStatement | PgfSetLayersStatement | PgfBasicStatement | MatrixStatement | GraphStatement | TikzFadingStatement | TdplotStatement | SpyStatement;
 
 export type Picture = {
   kind: "picture";
@@ -369,8 +372,8 @@ export function parse(source: string): ParseResult {
       const radius = radiusToks.map(t => t.text).join("").trim() || "1";
       return { kind: "polar", angle, radius, loc: startLoc, relative };
     }
-    // Check for comma -> cartesian at depth 0
-    let commaIdx = -1;
+    // Check for comma -> cartesian at depth 0 (support 2d and 3d)
+    let commaIndices: number[] = [];
     {
       let dBrace = 0, dParen = 0;
       for (let idx = 0; idx < innerTokens.length; idx++) {
@@ -379,15 +382,27 @@ export function parse(source: string): ParseResult {
         else if (tt.kind === "rbrace") dBrace--;
         else if (tt.kind === "lparen") dParen++;
         else if (tt.kind === "rparen") dParen--;
-        else if (tt.kind === "comma" && dBrace === 0 && dParen === 0) { commaIdx = idx; break; }
+        else if (tt.kind === "comma" && dBrace === 0 && dParen === 0) { commaIndices.push(idx); }
       }
     }
-    if (commaIdx !== -1) {
-      const xToks = innerTokens.slice(0, commaIdx);
-      const yToks = innerTokens.slice(commaIdx + 1);
-      const x = xToks.map(t => t.text).join("").trim() || "0";
-      const y = yToks.map(t => t.text).join("").trim() || "0";
-      return { kind: "cartesian", x, y, loc: startLoc, relative };
+    if (commaIndices.length >= 1) {
+      if (commaIndices.length === 1) {
+        const commaIdx = commaIndices[0];
+        const xToks = innerTokens.slice(0, commaIdx);
+        const yToks = innerTokens.slice(commaIdx + 1);
+        const x = xToks.map(t => t.text).join("").trim() || "0";
+        const y = yToks.map(t => t.text).join("").trim() || "0";
+        return { kind: "cartesian", x, y, loc: startLoc, relative } as Coordinate;
+      } else if (commaIndices.length >= 2) {
+        const c0 = commaIndices[0], c1 = commaIndices[1];
+        const xToks = innerTokens.slice(0, c0);
+        const yToks = innerTokens.slice(c0+1, c1);
+        const zToks = innerTokens.slice(c1+1);
+        const x = xToks.map(t => t.text).join("").trim() || "0";
+        const y = yToks.map(t => t.text).join("").trim() || "0";
+        const z = zToks.map(t => t.text).join("").trim() || "0";
+        return { kind: "cartesian", x, y, loc: startLoc, relative, z } as Coordinate;
+      }
     }
     // Otherwise named coordinate: e.g., "a", "myNode.north", "a.30"
     // Keep raw name; anchor handling later
@@ -1589,6 +1604,59 @@ export function parse(source: string): ParseResult {
           if (peek()?.kind === "semi") consume();
           return { kind: "pgf", text: buf, loc } as any;
         }
+        case "\\tikzfading": {
+          const loc = locFrom(consume()!);
+          let name = "";
+          let arg = "";
+          if (peek()?.kind === "lbracket") {
+            const opts = parseBracketOptions();
+            const nameOpt = opts.find(o=>o.key.toLowerCase()==="name"||o.raw.toLowerCase().includes("name"));
+            if (nameOpt?.value) name = nameOpt.value.trim();
+            else if (nameOpt) name = nameOpt.raw.split("=")[1]?.trim() ?? "";
+            arg = opts.map(o=>o.raw).join(",");
+          }
+          if (peek()?.kind === "lbrace") {
+            const body = parseBraceRaw() ?? "";
+            if (!name) name = body.trim().slice(0,20);
+            arg += body;
+          }
+          if (peek()?.kind === "semi") consume();
+          return { kind: "tikzfading", name, arg, loc } as any;
+        }
+        case "\\tdplotsetmaincoords": {
+          const loc = locFrom(consume()!);
+          const a = parseBraceRaw() ?? "30";
+          const b = parseBraceRaw() ?? "30";
+          return { kind: "tdplotsetmaincoords", theta: a.trim(), phi: b.trim(), loc } as any;
+        }
+        case "\\spy": {
+          const loc = locFrom(consume()!);
+          let opts: Option[] = [];
+          if (peek()?.kind === "lbracket") opts = parseBracketOptions();
+          // capture raw until ;
+          let raw = "";
+          while (peek() && peek()!.kind !== "semi") {
+            if (peek()!.kind === "lbrace") raw += "{" + (parseBraceRaw() ?? "") + "}";
+            else if (peek()!.kind === "lparen") {
+              const c = parseCoordinate();
+              raw += c ? `(${c.kind})` : consume()!.text;
+            } else raw += consume()!.text + " ";
+            if (peek()?.kind === "cs" && peek()!.text === "\\end") break;
+          }
+          if (peek()?.kind === "semi") consume();
+          return { kind: "spy", options: opts, raw, loc } as any;
+        }
+        case "\\includegraphics": {
+          const loc = locFrom(consume()!);
+          let opts: Option[] = [];
+          if (peek()?.kind === "lbracket") opts = parseBracketOptions();
+          let file = "";
+          if (peek()?.kind === "lbrace") file = parseBraceRaw() ?? "";
+          if (peek()?.kind === "semi") consume();
+          // This is typically inside node text, but if at top-level create a node-like placeholder?
+          // Return as a node statement containing includegraphics text for evaluator to handle?
+          return { kind: "tikzfading", name: "__includegraphics_placeholder", arg: file, loc } as any;
+        }
         case "\\end":
           // Should be handled by caller (scope/picture end)
           // Check for pgfonlayer end
@@ -1942,8 +2010,7 @@ export function parse(source: string): ParseResult {
       }
       continue;
     }
-    // Preamble / global definitions that don't create pictures themselves
-    if (t.kind === "cs" && ["\\tikzset", "\\tikzstyle", "\\definecolor", "\\colorlet", "\\def", "\\newcommand", "\\renewcommand", "\\let", "\\pgfmathsetmacro", "\\pgfmathtruncatemacro", "\\foreach"].includes(t.text)) {
+    if (t.kind === "cs" && ["\\tikzset", "\\tikzstyle", "\\definecolor", "\\colorlet", "\\def", "\\newcommand", "\\renewcommand", "\\let", "\\pgfmathsetmacro", "\\pgfmathtruncatemacro", "\\foreach", "\\tikzfading", "\\tdplotsetmaincoords", "\\spy"].includes(t.text)) {
       const item = parseAnyStatementInPicture();
       if (item) {
         // If we are outside any picture, buffer it for next picture; otherwise if no picture yet, keep pending

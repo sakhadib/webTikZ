@@ -50,6 +50,26 @@ export interface DisplayPath {
   // bbox flags
   useAsBoundingBox?: boolean;
   overlay?: boolean;
+  // Phase8: fading / transparency / shadows / canvas
+  fading?: string;
+  pathFading?: string;
+  scopeFading?: string;
+  fitFading?: boolean;
+  fadingAngle?: number;
+  blendMode?: string;
+  blendGroup?: string;
+  shadow?: any;
+  dropShadow?: any;
+  copyShadow?: any;
+  canvasTransform?: import("../geometry/affine.ts").Affine;
+}
+
+export interface DisplayImage {
+  kind: "image";
+  src: string;
+  at: Vec2;
+  widthPt?: number;
+  heightPt?: number;
 }
 
 export interface DisplayText {
@@ -63,6 +83,7 @@ export interface DisplayText {
   // measured box for bbox (optional, filled by text engine)
   widthPt?: number;
   heightPt?: number;
+  canvasTransform?: import("../geometry/affine.ts").Affine;
 }
 
 export interface DisplayGroup {
@@ -70,9 +91,21 @@ export interface DisplayGroup {
   children: DisplayItem[];
   opacity: number;
   clipPath?: PathSegment[]; // if present, clip to this path
+  // Phase8
+  fading?: string;
+  scopeFading?: string;
+  pathFading?: string;
+  fitFading?: boolean;
+  transparencyGroup?: boolean | string;
+  blendMode?: string;
+  blendGroup?: string;
+  shadow?: any;
+  spy?: boolean;
+  magnification?: number;
+  canvasTransform?: import("../geometry/affine.ts").Affine;
 }
 
-export type DisplayItem = DisplayPath | DisplayText | DisplayGroup;
+export type DisplayItem = DisplayPath | DisplayText | DisplayGroup | DisplayImage;
 
 export interface DisplayList {
   items: DisplayItem[];

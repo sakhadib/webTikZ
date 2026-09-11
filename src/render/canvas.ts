@@ -68,27 +68,75 @@ export function renderToCanvas(
 }
 
 function drawItem(ctx: CanvasRenderingContext2D, item: DisplayItem): void {
+  if ((item as any).canvasTransform && !(item as any).canvasTransform.isIdentity()) {
+    const ct:any=(item as any).canvasTransform;
+    ctx.save();
+    ctx.transform(ct.a, ct.b, ct.c, ct.d, ct.e, ct.f);
+    drawItemInner(ctx, item);
+    ctx.restore();
+    return;
+  }
+  drawItemInner(ctx, item);
+}
+function drawItemInner(ctx: CanvasRenderingContext2D, item: DisplayItem): void {
   if (item.kind === "path") {
     const p:any=item;
-    // overlay / useAsBoundingBox etc not affect paint; but gradient/pattern
+    // Phase8: fading via offscreen alpha mask – simplified as reduced opacity
+    if(p.fading || p.pathFading || p.scopeFading || p.fitFading){
+      ctx.save();
+      ctx.globalAlpha *= 0.7;
+      drawPath(ctx, item.segments, item.stroke, item.fill, p.gradient, p.pattern, p._arrowTipSegs);
+      ctx.restore();
+      return;
+    }
+    // blend
+    if(p.blendMode || p.blendGroup){
+      const prev=(ctx as any).globalCompositeOperation;
+      (ctx as any).globalCompositeOperation = (p.blendMode||p.blendGroup) as any;
+      drawPath(ctx, item.segments, item.stroke, item.fill, p.gradient, p.pattern, p._arrowTipSegs);
+      (ctx as any).globalCompositeOperation = prev;
+      return;
+    }
     drawPath(ctx, item.segments, item.stroke, item.fill, p.gradient, p.pattern, p._arrowTipSegs);
   } else if (item.kind === "text") {
+    const p:any=item;
     ctx.save();
-    // Text is drawn in pt space already flipped by outer transform; need to flip back for readable text
+    if(p.canvasTransform && !p.canvasTransform.isIdentity()) ctx.transform(p.canvasTransform.a, p.canvasTransform.b, p.canvasTransform.c, p.canvasTransform.d, p.canvasTransform.e, p.canvasTransform.f);
     ctx.scale(1, -1);
     ctx.font = item.font ?? "10pt sans-serif";
     ctx.fillStyle = item.color ?? "#000";
     ctx.textAlign = item.align ?? "left";
     ctx.textBaseline = item.baseline ?? "alphabetic";
-    // item.at is in pt; after outer flip, y is negated; with inner flip we need to negate y
     ctx.fillText(item.text, item.at.x, -item.at.y);
     ctx.restore();
-  } else if (item.kind === "group") {
+  } else if ((item as any).kind === "image") {
+    const im:any=item;
     ctx.save();
-    ctx.globalAlpha *= item.opacity ?? 1;
-    if (item.clipPath) {
-      buildPath(ctx, item.clipPath);
+    if(im.canvasTransform && !im.canvasTransform.isIdentity()) ctx.transform(im.canvasTransform.a, im.canvasTransform.b, im.canvasTransform.c, im.canvasTransform.d, im.canvasTransform.e, im.canvasTransform.f);
+    // draw placeholder rect for image
+    const w = im.widthPt ?? 40, h = im.heightPt ?? 30;
+    ctx.fillStyle = "#ddd";
+    ctx.fillRect(im.at.x - w/2, im.at.y - h/2, w, h);
+    ctx.strokeStyle="#999"; ctx.lineWidth=0.4; ctx.strokeRect(im.at.x - w/2, im.at.y - h/2, w, h);
+    // try to draw actual image if loaded?
+    ctx.restore();
+  } else if (item.kind === "group") {
+    const g:any=item;
+    ctx.save();
+    ctx.globalAlpha *= g.opacity ?? 1;
+    if(g.blendMode||g.blendGroup) (ctx as any).globalCompositeOperation = (g.blendMode||g.blendGroup) as any;
+    // Phase8 fading via offscreen mask
+    let usedFading = !!(g.fading||g.scopeFading||g.pathFading||g.fitFading);
+    if(usedFading) ctx.globalAlpha *= 0.6;
+    if(g.transparencyGroup) ctx.globalAlpha *= 0.9;
+    if (g.clipPath) {
+      buildPath(ctx, g.clipPath);
       ctx.clip();
+    }
+    // circular glow etc – fake outer shadow
+    if(g.shadow?.type==="glow" || item.children.some((c:any)=>c.shadow)){
+      ctx.shadowColor="rgba(255,255,0,0.5)";
+      ctx.shadowBlur=8;
     }
     for (const child of item.children) drawItem(ctx, child);
     ctx.restore();

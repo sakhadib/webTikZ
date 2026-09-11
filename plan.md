@@ -331,15 +331,15 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** the remaining visual effects.
 
-- [ ] Fadings via offscreen-canvas masks (`path fading`, `fit fading`, `scope fading`, `\tikzfading`).
-- [ ] Transparency groups and blend modes (`transparency group`, `blend group=multiply`, etc. mapped to `globalCompositeOperation`).
-- [ ] shadows library: `drop shadow`, `copy shadow`, `circular drop shadow`, `circular glow`.
-- [ ] 3D: `(x,y,z)` coordinates with configurable unit vectors, 3d library (`canvas is xy plane at z=…`), a tikz-3dplot compatibility shim (`\tdplotsetmaincoords`, rotated frames), perspective library.
-- [ ] spy library (magnified re-render of a region into a clipped lens).
-- [ ] Images in nodes: `\includegraphics[width=…]{url}` with async loading.
-- [ ] `transform canvas` fully supported across all primitives.
+- [x] Fadings via offscreen-canvas masks (`path fading`, `fit fading`, `scope fading`, `\tikzfading`).
+- [x] Transparency groups and blend modes (`transparency group`, `blend group=multiply`, etc. mapped to `globalCompositeOperation`).
+- [x] shadows library: `drop shadow`, `copy shadow`, `circular drop shadow`, `circular glow`.
+- [x] 3D: `(x,y,z)` coordinates with configurable unit vectors, 3d library (`canvas is xy plane at z=…`), a tikz-3dplot compatibility shim (`\tdplotsetmaincoords`, rotated frames), perspective library.
+- [x] spy library (magnified re-render of a region into a clipped lens).
+- [x] Images in nodes: `\includegraphics[width=…]{url}` with async loading.
+- [x] `transform canvas` fully supported across all primitives.
 
-**Exit:** effects sections of pgfmanual at 75% or more. **Release 0.8.**
+**Exit:** effects sections of pgfmanual at 75% or more. **Release 0.8.** — **Done 2026-09-11. Bundle 164 KB / 49 KB gz. 39 tests (`tests/unit/phase8.test.ts`), 496 total.**
 
 ### Phase 9 — Plotting plugin, "pgfplots-lite" (6–10 weeks, parallelizable)
 

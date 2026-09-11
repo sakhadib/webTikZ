@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.5.0 — **Phase 5 (Composition — Core Complete)** — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~38 KB gz (Phase 5, 127 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/lexer/index.ts:1`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1`, `src/keys/index.ts:1` `src/shapes/index.ts:1` `src/geometry/*` `src/arrows/index.ts:1`
-> **Tests:** 362 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.6.0 — **Phase 6 (Decorations)** complete — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~43 KB gz (Phase 6, 140 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/decorations/index.ts:12`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1350`, `src/geometry/path.ts:1`
+> **Tests:** 407 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 5**. Anything tagged Phase 6+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 6**. Anything tagged Phase 7+ is *not yet implemented* and will error or be ignored.
 
 ---
 
@@ -286,7 +286,7 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 3 Nodes & text | **Done 2026-09-11** | 28 KB gz | 53 tests; TextEngine, nodes, anchors, path nodes, positioning, labels/pins |
 | 4 Geometry & styling | **Done 2026-09-11** | 35 KB gz | 46 tests; calc, perpendicular, intersections, arrows.meta, shadings, patterns, bbox |
 | 5 Composition | **Done 2026-09-11** | 38 KB gz | 50 tests; pics, quotes, edge/to path, plot, fit, backgrounds, layers, shape libs, through, PGF basic — **Core 0.5** |
-| 6 Decorations | TODO | < ? | automaton, pathmorphing, markings etc |
+| 6 Decorations | **Done 2026-09-11** | 43 KB gz | 45 tests; automaton, pathmorphing, pathreplacing, markings, text/footprints/fractals |
 | 7 Structured diagrams | TODO | < ? | matrix, trees, graphs |
 | … | … | … | … |
 
@@ -885,3 +885,48 @@ Subset: `\pgfpathmoveto/curveto/lineto/close/rectangle/circle/ellipse/moveto` + 
 ---
 
 **For AI (updated for Phase 5 — CORE COMPLETE):** You now have **full core** (Phases 1-5) under 50 KB gz. Prefer `pic` for reuse (`my dot/.pic`), `angles`+`quotes` for `angle=A--B--C`, `edge` for separate connections, `to path` for custom edges. For data, use `plot coordinates` / `plot ({\x},{expr})` with `domain/samples/smooth/mark=`. For groups, use `fit=(A)(B)` and `pgfonlayer` layers + `backgrounds`. Choose shape libraries explicitly — `diamond`, `star`, `rounded rectangle callout`, `tape`, `cylinder` now exist. Still no `decorations` (Phase 6) or `matrix/trees/graphs` (Phase 7) — for tables use `fit`+`calc`, for trees use manual `child` via `pic` recursion.
+
+---
+
+## 15. Phase 6 — Decorations — **NEW in 0.6.0**
+
+> **Scope:** `src/decorations/index.ts:12`, `src/core/evaluator.ts:1350`, `src/geometry/path.ts:1`
+> **Tests:** 45 (`tests/unit/phase6.test.ts:1`) — 407 total, 43 KB gz
+
+Phase 6 adds PGF-like walking along paths. AIs can now generate **hand-drawn, braced, and marked paths**.
+
+### 15.1 Automaton — `src/decorations/index.ts:12`
+
+```tex
+\tikzset{decoration={zigzag, amplitude=2pt, segment length=5pt}}
+\draw[decorate, decoration={zigzag}] (0,0) -- (2,0);
+\draw[decorate, decoration={coil, aspect=0.3}] (0,0) -- (2,0);
+```
+
+States: `width`, `next state`, `auto end on length`, `auto corner on length`, `persistent precomputation`. Common keys: `pre`, `post`, `pre length`, `post length`, `raise`, `mirror`, `transform`, `amplitude`, `segment length` — all work with `decorate`.
+
+### 15.2 Libraries
+
+```tex
+\usetikzlibrary{decorations.pathmorphing, decorations.pathreplacing, decorations.markings, decorations.shapes, decorations.text, decorations.footprints, decorations.fractals}
+\draw[decorate, decoration={zigzag, amplitude=1mm}] (0,0) -- (2,0);
+\draw[decorate, decoration={snake}] (0,0) -- (2,0);
+\draw[decorate, decoration={coil}] (0,0) -- (2,0);
+\draw[decorate, decoration={bumps}] (0,0) -- (2,0);
+\draw[decorate, decoration={brace, mirror, amplitude=5pt}] (0,0) -- (0,1);
+\draw[decorate, decoration={ticks}] (0,0) -- (2,0);
+\draw[decorate, decoration={show path construction}] (0,0) .. controls (1,1) .. (2,0);
+% markings
+\draw[postaction={decorate, decoration={markings, mark=at position 0.5 with {\arrow{Stealth}}}}] (0,0) -- (2,0);
+\draw[decorate, decoration={markings, mark=between positions 0 and 1 step 5mm with {\arrow{>}}}] (0,0) -- (2,0);
+% text along path
+\draw[decorate, decoration={text along path, text={hello world}, text align=center}] (0,0) -- (2,0);
+% fractals
+\draw[decorate, decoration={Koch curve type 1}] (0,0) -- (1,0);
+```
+
+All generators resample via `pointAtDistance`/`tangentAtT` from `src/geometry/path.ts:1`.
+
+---
+
+**For AI (updated for Phase 6):** Use `decorate` + `decoration={name, amplitude, segment length}` for wiggly/bumpy/coiled lines. For braces use `decorate, decoration={brace, mirror, amplitude=5pt}`. For arrows mid-path use `decorations.markings` `mark=at position 0.5`. For hand-drawn style combine `random steps`. Still no `matrix/trees/graphs` (Phase 7) — arrange those manually with `positioning`+`calc`.

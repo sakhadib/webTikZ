@@ -15,6 +15,8 @@ import type { FontSpec } from "../text/index.ts";
 import { getShape } from "../shapes/index.ts";
 import { computeNodeDimensions, defaultNodeOptions, getAnchor, getBorderPoint } from "../nodes/index.ts";
 import type { NodeEntry } from "../nodes/index.ts";
+import { getDecoration, defaultCommon } from "../decorations/index.ts";
+import type { DecorationCommon } from "../decorations/index.ts";
 
 export interface EvalOptions { scale?: number; }
 export interface EvalError { message: string; line: number; column: number; pos: number; severity: "error" | "warning"; codeFrame?: string; }
@@ -1346,10 +1348,17 @@ async function evaluatePath(
   let finalSegments = segments;
   if (roundedRadius !== null && roundedRadius > 0) finalSegments = applyRoundedCorners(segments, roundedRadius);
   if (finalSegments.length === 0) return null;
+  // Phase 6: decoration handling
+  const decorRes = applyDecorationIfNeeded(finalSegments, stmt.options, macros);
+  let decorExtra: DisplayItem[] = [];
+  if (decorRes) {
+    finalSegments = decorRes.segments;
+    decorExtra = decorRes.extra;
+  }
   const stroke = style.stroke; const fill = style.fill;
   const isClosed = finalSegments.some(s => s.kind === "close");
   const hasClip = stmt.action === "clip" || stmt.options.some(o => o.key.toLowerCase() === "clip");
-  if (hasClip) { const clipPath = finalSegments; const group: DisplayItem = { kind: "group", children: [], opacity: 1, clipPath }; return { item: group, extra: [], pathNodes: [], nodeItems: [] }; }
+  if (hasClip) { const clipPath = finalSegments; const group: DisplayItem = { kind: "group", children: [], opacity: 1, clipPath }; return { item: group, extra: [...decorExtra], pathNodes: [], nodeItems: [] }; }
   let finalStroke = stroke; let finalFill = fill;
   // Phase4 shading: shade/shadedraw produce gradient fill even without explicit fill color
   const isShade = stmt.action === "shade" || stmt.action === "shadedraw" || stmt.options.some(o=>o.key.toLowerCase().includes("shade")||o.raw.toLowerCase().includes("shade"));
@@ -1363,9 +1372,11 @@ async function evaluatePath(
     if(stmt.action==="shade") finalStroke=null;
   }
   const item: DisplayItem = { kind: "path", segments: finalSegments, stroke: finalStroke, fill: finalFill, isClosed } as any;
+  // Attach decoration extra if any
+  if (decorExtra.length > 0) (item as any)._decorExtra = decorExtra;
   // Phase5 edge: attach edge list as extra paths
   const edgeList = (stmt as any)._edgeList as { from: Vec2; to: Vec2; options: Option[]; loc: any }[] | undefined;
-  const extra: DisplayItem[] = [];
+  const extra: DisplayItem[] = [...decorExtra];
   if (edgeList && edgeList.length>0) {
     for (const e of edgeList) {
       const es = [{ kind: "moveTo", to: e.from }, { kind: "lineTo", to: e.to }] as PathSegment[];
@@ -1472,6 +1483,131 @@ async function evaluatePath(
     for (const d of nodeToDisplayItems(entry)) nodeItems.push(d);
   }
   return { item, extra, pathNodes: evaluatedPathNodes, nodeItems };
+}
+
+function applyDecorationIfNeeded(segments: PathSegment[], options: Option[], macros: Map<string,string>): { segments: PathSegment[]; extra: DisplayItem[] } | null {
+  // check decorate flag
+  const hasDecorate = options.some(o => o.key.toLowerCase() === "decorate" || o.raw.toLowerCase() === "decorate");
+  if (!hasDecorate) return null;
+  // find decoration option
+  let decorRaw = "";
+  let decorValue = "";
+  for (const o of options) {
+    const k = o.key.toLowerCase();
+    if (k === "decoration" || o.raw.toLowerCase().startsWith("decoration")) {
+      decorValue = (o.value ?? "").trim();
+      decorRaw = o.raw;
+      break;
+    }
+  }
+  // If no explicit decoration option, try to infer from raw like decoration={zigzag} inside value may have been split?
+  if (!decorValue) {
+    // fallback: look for any option that contains decoration name as bare word? ignore
+    return null;
+  }
+  // Strip outer braces: decoration={zigzag, amplitude=2pt} -> inner
+  let inner = decorValue.trim();
+  if (inner.startsWith("{") && inner.endsWith("}")) inner = inner.slice(1, -1).trim();
+  // inner split into parts; first part without = is name
+  const parts = (() => {
+    const out: string[] = []; let buf = ""; let dB = 0, dBk = 0;
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (ch === "{") dB++; else if (ch === "}") dB--; else if (ch === "[") dBk++; else if (ch === "]") dBk--;
+      if (ch === "," && dB === 0 && dBk === 0) { out.push(buf.trim()); buf = ""; } else buf += ch;
+    }
+    if (buf.trim()) out.push(buf.trim());
+    return out;
+  })();
+  let name = "";
+  const rawMap = new Map<string,string>();
+  rawMap.set("_raw", inner);
+  for (const p of parts) {
+    const eq = p.indexOf("=");
+    if (eq === -1) {
+      const lower = p.toLowerCase().trim();
+      // skip known common keys that are not name
+      const isCommon = ["amplitude","segment length","pre length","post length","raise","mirror","aspect","pre","post","transform"].includes(lower);
+      if (!name && !isCommon && lower !== "mirror" && lower !== "decorate") {
+        name = p.trim();
+        rawMap.set("_name", name);
+      } else if (lower === "mirror") {
+        rawMap.set("mirror", "true");
+      } else {
+        // bare flag like mirror
+        rawMap.set(lower, "true");
+      }
+    } else {
+      const k = p.slice(0, eq).trim().toLowerCase();
+      const v = p.slice(eq + 1).trim();
+      rawMap.set(k, v);
+    }
+  }
+  if (!name) {
+    // try to get name from rawMap if contains decoration name key? e.g., name=zigzag
+    if (rawMap.has("name")) name = rawMap.get("name")!;
+    else {
+      // fallback: first token
+      name = parts[0]?.split("=")[0]?.trim() ?? "";
+    }
+  }
+  const gen = getDecoration(name);
+  if (!gen) {
+    // also try lower variations
+    const g2 = getDecoration(name.replace(/\s+/g, " ").trim());
+    if (!g2) return null;
+    name = name.replace(/\s+/g, " ").trim();
+  }
+  const genFn = getDecoration(name) ?? getDecoration(name.toLowerCase());
+  if (!genFn) return null;
+  const common = defaultCommon();
+  // helper to parse dim
+  const parseDim = (s: string): number => {
+    try { return evaluateDimensionString(s, macros); } catch { const n = parseFloat(s); return isNaN(n) ? 0 : n; }
+  };
+  // Collect common from rawMap and also from outer options (top-level)
+  const outerMap = new Map<string,string>();
+  for (const o of options) {
+    const k = o.key.toLowerCase();
+    const v = (o.value ?? "").trim();
+    if (["amplitude","segment length","segmentlength","pre length","post length","raise","mirror","aspect","pre","post","transform"].includes(k) || k === "pre" || k === "post") {
+      outerMap.set(k, v || "true");
+    }
+    // also raw containing mirror etc.
+    if (o.raw.toLowerCase().trim() === "mirror") outerMap.set("mirror", "true");
+  }
+  const getVal = (key: string): string | undefined => rawMap.get(key) ?? outerMap.get(key);
+  const ampStr = getVal("amplitude");
+  if (ampStr) common.amplitude = parseDim(ampStr);
+  const segStr = getVal("segment length") ?? getVal("segmentlength");
+  if (segStr) common.segmentLength = parseDim(segStr);
+  const preStr = getVal("pre length") ?? getVal("pre");
+  if (preStr) common.preLength = parseDim(preStr);
+  const postStr = getVal("post length") ?? getVal("post");
+  if (postStr) common.postLength = parseDim(postStr);
+  const raiseStr = getVal("raise");
+  if (raiseStr) common.raise = parseDim(raiseStr);
+  const aspectStr = getVal("aspect");
+  if (aspectStr) common.aspect = parseFloat(aspectStr) || common.aspect;
+  if (getVal("mirror") !== undefined) common.mirror = true;
+  // also check outer raw mirror boolean
+  if (options.some(o => o.raw.toLowerCase().includes("mirror"))) common.mirror = true;
+  if (rawMap.get("mirror") !== undefined) common.mirror = true;
+  // also if name contains mirror? ignore
+  // Merge raw for text etc.
+  if (rawMap.has("text")) {/* keep */}
+  else {
+    // Try to find text= in inner for text along path
+    const txtMatch = inner.match(/text\s*=\s*\{([^}]+)\}/i) ?? inner.match(/text\s*=\s*"?([^",}]+)"?/i);
+    if (txtMatch) rawMap.set("text", txtMatch[1]);
+    else {
+      // If custom text along path without explicit key but inner contains quoted?
+      const q = inner.match(/"([^"]+)"/);
+      if (q) rawMap.set("text", q[1]);
+    }
+  }
+  const result = genFn(segments, common, rawMap);
+  return result;
 }
 
 function resolveOptions(options: Option[], action: string, errors: EvalError[]): { stroke: StrokeStyle | null; fill: FillStyle | null; arrowStart: boolean; arrowEnd: boolean; inferredColor?: string } {

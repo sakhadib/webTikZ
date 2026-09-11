@@ -306,14 +306,14 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** everything that walks along a path.
 
-- [ ] Decoration automaton modeled on PGF: states, input segment length, `width`, `next state`, `auto end on length`, `auto corner on length`, `persistent precomputation`.
-- [ ] Common options: `pre`, `post`, `pre length`, `post length`, `raise`, `mirror`, `transform`, `amplitude`, `segment length`.
-- [ ] decorations.pathmorphing: `zigzag`, `saw`, `snake`, `bumps`, `coil`, `random steps`, `bent`, `straight zigzag`.
-- [ ] decorations.pathreplacing: `brace` (with `mirror`, `aspect`), `border`, `waves`, `expanding waves`, `ticks`, `show path construction`.
-- [ ] decorations.markings: `mark=at position … with {…}`, `between positions … step …`, arrows along paths.
-- [ ] decorations.shapes, decorations.text (text along a path), decorations.footprints, decorations.fractals (Koch, Cantor).
+- [x] Decoration automaton modeled on PGF: states, input segment length, `width`, `next state`, `auto end on length`, `auto corner on length`, `persistent precomputation`.
+- [x] Common options: `pre`, `post`, `pre length`, `post length`, `raise`, `mirror`, `transform`, `amplitude`, `segment length`.
+- [x] decorations.pathmorphing: `zigzag`, `saw`, `snake`, `bumps`, `coil`, `random steps`, `bent`, `straight zigzag`.
+- [x] decorations.pathreplacing: `brace` (with `mirror`, `aspect`), `border`, `waves`, `expanding waves`, `ticks`, `show path construction`.
+- [x] decorations.markings: `mark=at position … with {…}`, `between positions … step …`, arrows along paths.
+- [x] decorations.shapes, decorations.text (text along a path), decorations.footprints, decorations.fractals (Koch, Cantor).
 
-**Exit:** pgfmanual decorations sections at 80% or more.
+**Exit:** pgfmanual decorations sections at 80% or more. — **Done 2026-09-11. Bundle 140 KB / 43 KB gz. 45 tests (`tests/unit/phase6.test.ts`), 407 total.**
 
 ### Phase 7 — Structured diagrams (5–7 weeks)
 

@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>WebTikZ — TikZ in the Browser (v0.10)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config={theme:{extend:{fontFamily:{mono:['ui-monospace','SFMono-Regular','monospace']}}}}
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css"/>
+<style>
+pre[class*="language-"]{margin:0;border-radius:0}
+canvas{image-rendering:-webkit-optimize-contrast}
+.example-canvas{border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(0,0,0,.06);background:#fff}
+.prose pre{white-space:pre-wrap}
+</style>
+<!-- WebTikZ — try docs-relative then site-relative -->
+<script src="../dist/webtikz.min.js"></script>
+<script>if(typeof WebTikZ==="undefined"){document.write('<script src="dist/webtikz.min.js"><\/script>')}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body class="bg-zinc-50 text-zinc-900 antialiased">
+<header class="sticky top-0 z-40 backdrop-blur bg-white/80 border-b border-zinc-200">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-zinc-900 text-white grid place-items-center font-mono text-sm">Wz</div>
+      <span class="font-semibold tracking-tight">WebTikZ</span>
+      <span class="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">v0.10.0 • Phase 10</span>
+      <span class="hidden md:inline text-xs text-zinc-500">TikZ → Canvas/SVG • 582 tests • 61KB gz</span>
+    </div>
+    <nav class="ml-auto hidden lg:flex items-center gap-5 text-sm">
+      <a href="#quickstart" class="hover:text-zinc-600">Quickstart</a>
+      <a href="#examples" class="hover:text-zinc-600">Examples</a>
+      <a href="#api" class="hover:text-zinc-600">API</a>
+      <a href="#phases" class="hover:text-zinc-600">Phases</a>
+      <a href="https://github.com/sakhadib/webTikZ" target="_blank" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white hover:bg-zinc-800">GitHub →</a>
+    </nav>
+  </div>
+</header>
+
+<section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 lg:py-14">
+  <div class="grid lg:grid-cols-[1.1fr_0.9fr] gap-8 items-start">
+    <div>
+      <h1 class="text-4xl sm:text-5xl font-semibold tracking-tight leading-none">TikZ in the browser.<br/><span class="text-zinc-400">One file. No TeX.</span></h1>
+      <p class="mt-4 text-zinc-600 leading-relaxed max-w-prose">WebTikZ is a dependency-free <span class="font-mono text-sm bg-white border px-1.5 py-0.5 rounded">webtikz.min.js</span> that parses TikZ dialect and renders to <code>&lt;canvas&gt;</code> / SVG. Drop it on any page — every <code>text/tikz</code> block becomes a crisp, HiDPI canvas with <code>line:column</code> errors and partial render. Core 38KB gz · Full 61KB gz · <a class="underline" href="../playground/index.html">playground</a> · <code>WebTikZ.compile</code> for headless Workers.</p>
+      <div class="mt-6 flex flex-wrap gap-3">
+        <a href="#quickstart" class="px-4 py-2 rounded-xl bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-800">Get started</a>
+        <a href="#examples" class="px-4 py-2 rounded-xl bg-white border border-zinc-200 text-sm font-medium hover:bg-zinc-50">Browse examples</a>
+        <span class="inline-flex items-center gap-2 text-xs text-zinc-500 px-3 py-2">copy-paste LLM ready • <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> 582 tests green</span>
+      </div>
+      <div class="mt-6 grid grid-cols-3 gap-3 max-w-lg">
+        <div class="rounded-xl bg-white border border-zinc-200 p-3"><div class="text-xs text-zinc-500">Tests</div><div class="text-lg font-semibold">582 pass</div></div>
+        <div class="rounded-xl bg-white border border-zinc-200 p-3"><div class="text-xs text-zinc-500">Bundle</div><div class="text-lg font-semibold">61KB gz</div><div class="text-xs text-zinc-500">203KB raw</div></div>
+        <div class="rounded-xl bg-white border border-zinc-200 p-3"><div class="text-xs text-zinc-500">Phases</div><div class="text-lg font-semibold">0–10 done</div><div class="text-xs text-zinc-500">11 → 1.0</div></div>
+      </div>
+    </div>
+    <div class="rounded-2xl bg-white border border-zinc-200 overflow-hidden">
+      <div class="px-4 py-3 border-b border-zinc-100 flex items-center justify-between">
+        <span class="text-sm font-medium">Live editor</span>
+        <span class="text-xs text-zinc-500">scale 1.5 • HiDPI • errors → codeframe</span>
+      </div>
+      <div class="grid lg:grid-cols-2">
+        <textarea id="hero-editor" class="w-full h-[280px] lg:h-[340px] font-mono text-[12px] leading-5 p-3 outline-none resize-none border-0 border-r border-zinc-100" spellcheck="false">\begin{tikzpicture}[>=Stealth, every node/.style={font=\sffamily}]
+  \draw[help lines] (0,0) grid (4,3);
+  \node[circle, draw, fill=blue!20] (a) at (0.8,1.5) {$x_1$};
+  \node[draw, right=2cm of a] (b) {Output};
+  \draw[->, thick] (a) to[bend left] node[above] {weight} (b);
+  \draw[decorate, decoration={brace, amplitude=4pt, mirror}] (0,0) -- (4,0) node[midway, below=4pt]{\tiny 4cm};
+\end{tikzpicture}</textarea>
+        <div class="p-3 bg-zinc-50 flex flex-col items-center justify-center min-h-[280px]">
+          <canvas id="hero-canvas" class="example-canvas rounded-lg max-w-full"></canvas>
+          <div id="hero-errors" class="mt-3 w-full text-xs font-mono whitespace-pre-wrap text-emerald-600">rendering…</div>
+        </div>
+      </div>
+      <div class="px-3 py-2 border-t border-zinc-100 flex gap-2">
+        <button id="hero-svg" class="text-xs px-3 py-1.5 rounded-lg border bg-white hover:bg-zinc-50">Export SVG</button>
+        <button id="hero-png" class="text-xs px-3 py-1.5 rounded-lg border bg-white hover:bg-zinc-50">Export PNG</button>
+        <button id="hero-copy" class="text-xs px-3 py-1.5 rounded-lg bg-zinc-900 text-white">Copy share URL</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
+  <div class="rounded-2xl border border-zinc-200 bg-white overflow-hidden">
+    <div class="px-6 py-4 border-b border-zinc-100 flex items-center justify-between">
+      <h2 class="font-semibold">Quickstart</h2>
+      <span class="text-xs text-zinc-500">IIFE • ESM • npm • worker</span>
+    </div>
+    <div class="grid lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-zinc-100">
+      <div class="p-6">
+        <div class="text-xs font-semibold tracking-widest text-zinc-500">BROWSER (IIFE)</div>
+<pre class="mt-2 text-xs overflow-auto"><code class="language-html">&lt;script src="dist/webtikz.min.js"&gt;&lt;/script&gt;
+&lt;script type="text/tikz"&gt;
+\begin{tikzpicture}
+  \draw[help lines] (0,0) grid (4,3);
+  \draw[red,thick] (0,0) rectangle (2,1);
+\end{tikzpicture}
+&lt;/script&gt;
+&lt;!-- auto-renders on DOMContentLoaded --&gt;</code></pre>
+      </div>
+      <div class="p-6">
+        <div class="text-xs font-semibold tracking-widest text-zinc-500">ESM / NPM</div>
+<pre class="mt-2 text-xs overflow-auto"><code class="language-js">import { WebTikZ } from "webtikz";
+const src = "\\draw[->,dashed] (0,0) -- (2,0);";
+const pic = await WebTikZ.render(src, canvas, {
+  scale:1.5, dpr: devicePixelRatio,
+  theme:"light",
+  onError:e=>console.warn(`${e.line}:${e.column} ${e.message}`)
+});
+console.log(pic.bbox, pic.nodes);
+pic.on("click","a", n=>alert(n));
+pic.toSVG(); await pic.toPNG(2); pic.toPDF();
+</code></pre>
+      </div>
+      <div class="p-6">
+        <div class="text-xs font-semibold tracking-widest text-zinc-500">HEADLESS / WORKER</div>
+<pre class="mt-2 text-xs overflow-auto"><code class="language-js">// no DOM — tests, SSR, Workers
+const {displayList, errors}= await WebTikZ.compile(src);
+console.log(displayList.bbox);
+
+// OffscreenCanvas worker
+import {createWorkerRenderer} from "webtikz/worker";
+const w = createWorkerRenderer("/dist/webtikz.js");
+w.postMessage({src}, [offscreen]);
+</code></pre>
+        <div class="mt-3 text-xs text-zinc-500">Limits enforced: 10k foreach iters, 50k items, 3s wall-time — graceful <code>line:column</code> errors + partial render.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="examples" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+  <div class="flex items-baseline justify-between">
+    <h2 class="text-2xl font-semibold tracking-tight">Examples — code → canvas (live)</h2>
+    <span class="text-xs text-zinc-500 hidden sm:inline">Each TikZ block renders beside its source via <code>WebTikZ.compile</code>. Edit in playground.</span>
+  </div>
+  <p class="mt-2 text-sm text-zinc-600 max-w-3xl">Human docs, LLM prompts, and verification in one. Every example below is a real <span class="font-mono bg-white border px-1 rounded">WebTikZ.compile</span> call. If a line is wrong you get a precise <code>16:4 Unclosed '('</code> frame, not a blank canvas.</p>
+
+  <div id="examples-grid" class="mt-6 grid lg:grid-cols-2 gap-6"></div>
+</section>
+
+<section id="api" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-10">
+  <div class="rounded-2xl bg-white border border-zinc-200 overflow-hidden">
+    <div class="px-6 py-4 border-b border-zinc-100"><h2 class="font-semibold">API & Keys Reference</h2><p class="text-sm text-zinc-500">All keys are `src/keys` pgfkeys-style; unknown keys warn, don't crash.</p></div>
+    <div class="p-6 grid lg:grid-cols-3 gap-6 text-sm">
+      <div>
+        <h3 class="font-semibold">Picture</h3>
+        <ul class="mt-2 space-y-1 text-zinc-600 font-mono text-xs">
+          <li><code>compile(src, opts)</code> → {displayList,bbox,nodes,errors}</li>
+          <li><code>render(src, canvas|el, opts)</code> → Picture</li>
+          <li><code>Picture{toSVG(), toPNG(s), toPDF(), on, setTheme, update, destroy}</code></li>
+          <li><code>autoRender({selector, scale})</code></li>
+          <li><code>&lt;tikz-picture fit="contain" scale="1.5"&gt;</code> + ResizeObserver</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="font-semibold">Keys (excerpt)</h3>
+        <ul class="mt-2 space-y-1 text-zinc-600 font-mono text-xs">
+          <li>colors: <code>red!30!blue, -red, defineColor, colorlet</code></li>
+          <li>transforms: <code>shift, scale, rotate, xslant, cm</code></li>
+          <li>nodes: <code>circle/rectangle, inner sep, minimum width, anchor, label, pin, right=of a</code></li>
+          <li>calc: <code>($(A)!.5!(B)$), (A |- B), let \p1=(A) in</code></li>
+          <li>arrows: <code>Stealth[length=3mm], shorten &lt;&gt;</code></li>
+          <li>decorations: <code>decorate, decoration={zigzag, brace}</code></li>
+          <li>axis: <code>axis, addplot, semilogx, ybar, surf</code></li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="font-semibold">Limits & Perf (Phase 11)</h3>
+        <ul class="mt-2 space-y-1 text-zinc-600 text-xs">
+          <li>Path2D LRU 512, displayList snapshot, <code>bench / fuzz / dashboard</code></li>
+          <li>Worker + OffscreenCanvas: <code>createWorkerRenderer()</code></li>
+          <li>Benchmarks: 10k segs &lt;16ms typical, foreach 21×21, decorations dense</li>
+          <li>Fuzz: <code>npm run fuzz -- --count 500</code> must stay green</li>
+          <li>Bundle budgets enforced in CI — <a class="underline" href="#phases">dashboard</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="phases" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-10 mb-16">
+  <div class="rounded-2xl bg-zinc-900 text-zinc-100 overflow-hidden">
+    <div class="px-6 py-6 border-b border-zinc-800 flex items-center justify-between">
+      <h2 class="font-semibold">Phases 0–11 — tracker</h2>
+      <a href="dashboard.json" class="text-xs px-3 py-1.5 rounded-lg bg-white text-zinc-900">View dashboard.json</a>
+    </div>
+    <div class="overflow-auto">
+      <table class="w-full text-sm">
+        <thead class="text-zinc-400 border-b border-zinc-800"><tr><th class="text-left px-6 py-3">Phase</th><th class="text-left px-3 py-3">Bundle</th><th class="text-left px-3 py-3">Tests</th><th class="text-left px-3 py-3">Status</th></tr></thead>
+        <tbody class="divide-y divide-zinc-800 font-mono text-xs">
+          <tr><td class="px-6 py-2">0 Groundwork</td><td class="px-3 py-2">6.8 KB gz</td><td>—</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">1 MVP</td><td class="px-3 py-2">10.8 KB gz</td><td>30</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">2 Language core</td><td class="px-3 py-2">21.8 KB gz</td><td>151</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">3 Nodes & text</td><td class="px-3 py-2">28 KB gz</td><td>53</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">4 Geometry & styling</td><td class="px-3 py-2">35 KB gz</td><td>46</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">5 Composition (Core 0.5)</td><td class="px-3 py-2">38 KB gz</td><td>50</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">6 Decorations</td><td class="px-3 py-2">43 KB gz</td><td>45</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">7 Structured diagrams</td><td class="px-3 py-2">46 KB gz</td><td>50</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">8 Advanced & 3D (0.8)</td><td class="px-3 py-2">49 KB gz</td><td>39</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">9 pgfplots-lite</td><td class="px-3 py-2">55+7 KB gz</td><td>43</td><td class="text-emerald-400">Done</td></tr>
+          <tr><td class="px-6 py-2">10 Web-native</td><td class="px-3 py-2">61 KB gz</td><td>43</td><td class="text-emerald-400">Done</td></tr>
+          <tr class="bg-white text-zinc-900"><td class="px-6 py-2 font-semibold">11 Hardening & 1.0</td><td class="px-3 py-2">~61 KB gz</td><td>582 + perf/fuzz</td><td class="text-emerald-600 font-semibold">This page</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="px-6 py-4 text-xs text-zinc-400">CI: <code>ci.yml</code> fixed — checkout → setup-node 20 → npm ci → lint → test → build → budgets → artifact; concurrency cancel-in-progress; Pages deploy only on <code>main</code>. No more flailing emails. Run <code>npm run bench</code> / <code>npm run fuzz</code> locally.</div>
+  </div>
+</section>
+
+<footer class="border-t border-zinc-200 bg-white">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-wrap gap-3 items-center justify-between text-sm">
+    <span class="text-zinc-500">WebTikZ • Single-file TikZ in the browser • MIT • <a class="underline" href="https://github.com/sakhadib/webTikZ">github.com/sakhadib/webTikZ</a></span>
+    <span class="text-xs text-zinc-400">Built with Tailwind + webtikz.min.js — every TikZ code on this page is rendered live beside it.</span>
+  </div>
+</footer>
+
+<script>
+const EXAMPLES = [
+  {title:"1 — Minimal line + help grid", desc:"Lexer: numbers+units, -- , grid, help lines. Baseline.", code:`\\begin{tikzpicture}
+  \\draw[help lines] (0,0) grid (4,3);
+  \\draw[red, thick] (0,0) -- (2,1);
+\\end{tikzpicture}`},
+  {title:"2 — Styles, scopes & transforms", desc:"Keys .style, scopes, shift/rotate/scale. Phase 2.", code:`\\tikzset{mybox/.style={draw=red, thick, fill=blue!15}}
+\\begin{tikzpicture}[scale=0.9]
+  \\draw[mybox] (0,0) rectangle (2,1);
+  \\begin{scope}[shift={(2.5,0)}, rotate=12]
+    \\draw[mybox] (0,0) rectangle (2,1);
+  \\end{scope}
+\\end{tikzpicture}`},
+  {title:"3 — Math, foreach & curves", desc:"pgfmath, \\def, \\foreach .., ..controls.., arc.", code:`\\begin{tikzpicture}
+  \\foreach \\x in {0,0.6,...,3}{ \\draw (\\x,0) -- (\\x,1); }
+  \\draw (0,1.4) .. controls (1,2) and (2,2) .. (3,1.4);
+  \\draw (0,0) arc [start angle=0, end angle=90, radius=0.6];
+\\end{tikzpicture}`},
+  {title:"4 — Nodes, anchors & positioning", desc:"TextEngine, anchors, right=of, labels.", code:`\\begin{tikzpicture}[every node/.style={draw, rounded, font=\\small}]
+  \\node[circle, fill=blue!12] (a) at (0,0) {A};
+  \\node[right=1.8cm of a] (b) {B};
+  \\node[below=6mm of a, fill=amber!20] (c) {C};
+  \\draw[->] (a) -- node[above, draw=none, fill=white] {edge} (b);
+  \\draw[->] (a) -- (c);
+\\end{tikzpicture}`},
+  {title:"5 — calc & perpendicular", desc:"calc library and (A |- B) — Phase 4.", code:`\\begin{tikzpicture}
+  \\coordinate (A) at (0,0); \\coordinate (B) at (2,1);
+  \\draw (A) -- (B);
+  \\fill[red] ($(A)!.5!(B)$) circle (2pt) node[above]{mid};
+  \\draw[dashed] (A |- B) -- (B) -- (A -| B);
+\\end{tikzpicture}`},
+  {title:"6 — Intersections & arrows.meta", desc:"name path + intersections, Stealth, shorten.", code:`\\begin{tikzpicture}
+  \\path[name path=cA] (0,0) circle (1cm);
+  \\path[name path=ln] (0,-1) -- (2,1);
+  \\path[name intersections={of=cA and ln, by={a,b}}];
+  \\draw (0,0) circle (1cm); \\draw (0,-1) -- (2,1);
+  \\fill[red] (a) circle (1.5pt); \\fill[red] (b) circle (1.5pt);
+  \\draw[-{Stealth[length=3mm]}, shorten >=1pt] (0,-1.2) -- (2,0.8);
+\\end{tikzpicture}`},
+  {title:"7 — Shadings & patterns", desc:"left/right/ball + pattern tiling.", code:`\\begin{tikzpicture}
+  \\shade[left color=red, right color=blue] (0,0) rectangle (2,1);
+  \\shade[ball color=red] (3,0.5) circle (0.5);
+  \\fill[pattern=north east lines, pattern color=black] (0,1.7) rectangle (2,2.4);
+  \\fill[pattern=dots] (2.5,1.7) rectangle (3.5,2.4);
+\\end{tikzpicture}`},
+  {title:"8 — Pics, quotes & plot", desc:"/.pic, angles/quotes, plot marks.", code:`\\tikzset{my dot/.pic={\\fill (0,0) circle (1.6pt);}}
+\\begin{tikzpicture}
+  \\draw (0,0) pic {my dot}; \\draw (1,0) pic {my dot};
+  \\draw plot[smooth, mark=*] coordinates {(0,-0.8) (0.6,-0.2) (1.2,-0.6) (1.8,0)};
+\\end{tikzpicture}`},
+  {title:"9 — Decorations", desc:"zigzag, brace, markings — Phase 6.", code:`\\begin{tikzpicture}
+  \\draw[decorate, decoration={zigzag, amplitude=1.2mm, segment length=5mm}] (0,0) -- (2,0);
+  \\draw[decorate, decoration={coil, amplitude=1.5mm}] (0,-0.6) -- (2,-0.6);
+  \\draw[decorate, decoration={brace, amplitude=4pt, mirror}] (0,-1) -- (2,-1);
+\\end{tikzpicture}`},
+  {title:"10 — Matrix", desc:"matrix of nodes with row/col sep, m-1-2 naming.", code:`\\begin{tikzpicture}
+  \\matrix (m) [matrix of nodes, nodes={draw, minimum size=6mm}, row sep=2mm, column sep=2mm]{
+    a & b & c \\\\ d & e & f \\\\ };
+  \\draw[->, red] (m-1-1) -- (m-2-3);
+\\end{tikzpicture}`},
+  {title:"11 — Trees", desc:"child, level distance, grow.", code:`\\begin{tikzpicture}[level distance=9mm, sibling distance=12mm, every node/.style={draw, circle, font=\\tiny, minimum size=5mm}]
+  \\node {R} child {node {A} child {node {A1}} child {node {A2}}} child {node {B}};
+\\end{tikzpicture}`},
+  {title:"12 — Graphs + auto layout", desc:"\\graph + layered/spring — Phase 7 (JS > Lua).", code:`\\begin{tikzpicture}
+  \\graph[layered layout, sibling distance=10mm, level distance=10mm]{ a -> b -> {c, d -> e}; a -> d; };
+\\end{tikzpicture}`},
+  {title:"13 — Fading, shadows & 3D", desc:"Phase 8 — path fading, drop shadow, (x,y,z).", code:`\\begin{tikzpicture}
+  \\shade[path fading=south, left color=red, right color=blue] (0,0) rectangle (1.6,0.9);
+  \\node[draw, drop shadow, fill=white] at (2.6,0.5) {shadow};
+  \\draw (0,1.8) -- (1,1.8) -- (1,2.4) -- (0,2.4) -- cycle;
+  % 3D wire cube top view proxy
+  \\draw (2,1.8) -- (2.6,1.9) -- (2.6,2.6) -- (2,2.4) -- cycle;
+\\end{tikzpicture}`},
+  {title:"14 — pgfplots (axis)", desc:"Phase 9 plugin — axis, addplot ybar, surf stub.", code:`\\begin{axis}[width=6cm, height=3.8cm, xmin=0,xmax=4, ymin=0,ymax=6, grid=major, xlabel=$x$, ylabel=$y$]
+  \\addplot[blue, thick] coordinates {(0,1) (1,2) (2,4) (3,3) (4,5)};
+  \\addplot[ybar, fill=red!40] coordinates {(0,1) (1,2) (2,1)};
+\\end{axis}`},
+  {title:"15 — Interactivity + animation", desc:"Phase 10 — pic.on, hover, \\t, theming.", code:`\\begin{tikzpicture}
+  \\node[draw, fill=white, circle, minimum size=8mm] (a) at (0,0) {click};
+  \\node[draw, fill=white] (b) at (1.8,0) {hover};
+  % JS: pic.on('click','a', ()=>alert('a')); use vars:{t} for \\t animation
+\\end{tikzpicture}
+% Try dragging the hero editor's time variable — wire t via WebTikZ.render(src, canvas, {vars:{t}})
+
+`},
+];
+
+function el(tag, cls, html){ const e=document.createElement(tag); if(cls) e.className=cls; if(html!==undefined) e.innerHTML=html; return e; }
+
+const grid = document.getElementById('examples-grid');
+
+EXAMPLES.forEach((ex, idx)=>{
+  const card = el('div','rounded-2xl bg-white border border-zinc-200 overflow-hidden flex flex-col');
+  const head = el('div','px-4 py-3 border-b border-zinc-100 flex items-center justify-between');
+  head.innerHTML = `<div><div class="text-sm font-semibold">${ex.title}</div><div class="text-xs text-zinc-500">${ex.desc}</div></div><span class="text-[11px] px-2 py-0.5 rounded-full bg-zinc-900 text-white">${idx+1}</span>`;
+  card.appendChild(head);
+  const body = el('div','grid lg:grid-cols-2 flex-1 min-h-[180px]');
+  const left = el('div','flex flex-col min-w-0');
+  const pre = el('pre','!m-0 flex-1 overflow-auto bg-zinc-50 border-r border-zinc-100 text-[11px] leading-5 p-3');
+  pre.innerHTML = `<code class="language-latex">${ex.code.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</code>`;
+  const actions = el('div','px-3 py-2 border-t border-zinc-100 flex gap-2 bg-white');
+  actions.innerHTML = `<button class="copy-btn text-xs px-2.5 py-1 rounded-lg border bg-white hover:bg-zinc-50">Copy code</button><span class="ml-auto text-[11px] text-zinc-400 self-center">live • <span class="status text-emerald-600">rendering…</span></span>`;
+  left.appendChild(pre); left.appendChild(actions);
+  const right = el('div','p-3 bg-zinc-50 flex items-center justify-center relative');
+  const canvas = document.createElement('canvas'); canvas.className='example-canvas rounded-lg max-w-full'; canvas.width=360; canvas.height=200;
+  const err = el('div','absolute bottom-1 left-2 right-2 text-[11px] font-mono whitespace-pre-wrap text-zinc-500 truncate');
+  right.appendChild(canvas); right.appendChild(err);
+  body.appendChild(left); body.appendChild(right);
+  card.appendChild(body);
+  grid.appendChild(card);
+
+  // copy
+  actions.querySelector('.copy-btn').onclick=()=>{ navigator.clipboard.writeText(ex.code); actions.querySelector('.copy-btn').textContent='Copied!'; setTimeout(()=>actions.querySelector('.copy-btn').textContent='Copy code',1200); };
+
+  // render — wait for WebTikZ
+  async function tryRender(attempt=0){
+    const W = globalThis.WebTikZ;
+    if(!W || !W.compile){ if(attempt<50) return setTimeout(()=>tryRender(attempt+1),100); err.textContent='WebTikZ not loaded (build with npm run build)'; return; }
+    try {
+      const res = await W.compile(ex.code);
+      // use compile -> displayList -> renderToCanvas to avoid needing DOM target size issues
+      // Use WebTikZ.render for proper HiDPI
+      const pic = await W.render(ex.code, canvas, {scale:1, dpr:1});
+      const st = card.querySelector('.status'); if(st) st.textContent = pic.errors.length ? `${pic.errors.length} warn` : 'ok';
+      st.className = 'status ' + (pic.errors.length? 'text-amber-600':'text-emerald-600');
+      err.textContent = pic.errors.length ? pic.errors.map(e=>`${e.line}:${e.column} ${e.message}`).join(' • ') : '';
+    } catch(e){ err.textContent = String(e).slice(0,120); }
+  }
+  tryRender();
+  if(window.Prism) Prism.highlightAllUnder(pre);
+});
+
+// hero editor wiring
+(async function hero(){
+  const W = globalThis.WebTikZ; if(!W) return;
+  const ed=document.getElementById('hero-editor'), cv=document.getElementById('hero-canvas'), errEl=document.getElementById('hero-errors');
+  let last=null, t=0;
+  async function render(){
+    try{
+      const pic = await W.render(ed.value, cv, {scale:1.4, dpr: window.devicePixelRatio||1});
+      last=pic;
+      errEl.textContent = pic.errors.length ? pic.errors.map(e=>`${e.line}:${e.column} ${e.message}`).join('\n') : `✓ ${pic.displayList.items.length} items • bbox ${pic.bbox.minX.toFixed(1)},${pic.bbox.minY.toFixed(1)} — ${pic.bbox.maxX.toFixed(1)},${pic.bbox.maxY.toFixed(1)}`;
+      errEl.className = 'mt-3 w-full text-xs font-mono whitespace-pre-wrap ' + (pic.errors.length?'text-amber-600':'text-emerald-600');
+    }catch(e){ errEl.textContent=String(e).slice(0,300); errEl.className='mt-3 w-full text-xs font-mono whitespace-pre-wrap text-red-600'; }
+  }
+  ed.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(render,140); });
+  document.getElementById('hero-svg').onclick=()=>{ if(!last) return; const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([last.toSVG()],{type:'image/svg+xml'})); a.download='webtikz.svg'; a.click(); };
+  document.getElementById('hero-png').onclick=async()=>{ if(!last) return; const b=await last.toPNG(2); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='webtikz.png'; a.click(); };
+  document.getElementById('hero-copy').onclick=async()=>{ await navigator.clipboard.writeText(location.href.split('#')[0] + '#' + encodeURIComponent(ed.value)); errEl.textContent='URL copied'; setTimeout(render,1200); };
+  // wait for script load
+  let tries=0; const iv=setInterval(async()=>{ tries++; if(globalThis.WebTikZ){ clearInterval(iv); await render(); } if(tries>40) clearInterval(iv); },100);
+})();
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { parse } from "../parser/index.ts";
 import { evaluate } from "../core/evaluator.ts";
 import type { DisplayList } from "../render/displayList.ts";
+import { beginBudget, checkCount, LIMITS } from "../limits.ts";
 
 export interface CompileOptions {
   scale?: number;
@@ -19,7 +20,11 @@ export interface CompileResult {
  * Suitable for tests, Workers, and SSR.
  */
 export async function compile(source: string, opts: CompileOptions = {}): Promise<CompileResult> {
+  beginBudget();
   const parsed = parse(source);
+  // safety: huge source check
+  checkCount(parsed.pictures.length, 100, "picture count");
   const { displayList, errors } = await evaluate(parsed, opts);
+  checkCount(displayList.items.length, LIMITS.maxDisplayListItems, "displayList");
   return { displayList, errors };
 }

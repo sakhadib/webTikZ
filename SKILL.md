@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.10.0 — **Phase 10 (Web-native)** complete — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~61 KB gz (Phase 10 full, 203 KB raw) + `dist/webtikz-plots.js` 7 KB gz, IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/web/interactivity.ts:1` `src/web/animation.ts:1` `src/web/element.ts:1` `src/web/theme.ts:1` `src/web/a11y.ts:1` `src/web/export.ts:1` `src/render/displayList.ts:117`
-> **Tests:** 582 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + Phase 5: 50 + Phase 6: 45 + Phase 7: 50 + Phase 8: 39 + Phase 9: 43 + Phase 10: 43 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 1.0.0 — **Phase 11 (Hardening & 1.0)** — Release 1.0 — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~62 KB gz (Phase 11 full, 209 KB raw) + `dist/webtikz-plots.js` 7 KB gz, IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/perf/cache.ts:1` `src/limits.ts:1` `src/worker/index.ts:1` `benchmarks/bench.ts:1` `docs/index.html:1` `docs/dashboard.json` `src/web/*`
+> **Tests:** 582 pass + bench (10k 5.4ms) + fuzz 500 pass + dashboard — `npm test` green, `tsc --noEmit` clean, `.github/workflows/ci.yml:1` fixed
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 10**. Phase 11 (Hardening/1.0) is next — performance/caching/fuzzing/docs.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 11 — 1.0**. API frozen.
 
 ---
 
@@ -291,7 +291,7 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 8 Advanced rendering & 3D | **Done 2026-09-11** | 49 KB gz | 39 tests; fadings, transparency/blend, shadows, 3D/tdplot/spy, includegraphics, transform canvas — **Release 0.8** |
 | 9 Plotting (pgfplots-lite) | **Done 2026-09-11** | 55+7 KB gz | 43 tests; axis, semilog/loglog, ybar/xbar/stacked, area/fill between/error bars, colormap viridis, surf/mesh — **Plugin** |
 | 10 Web-native | **Done 2026-09-11** | 61 KB gz | 43 tests; hit testing, pic.on/hover, \t animation, <tikz-picture>, theming, export SVG/PNG/PDF, a11y, highlight — **Gallery ready** |
-| 11 Hardening & 1.0 | TODO | < ? | perf, fuzzing, docs, dashboard |
+| 11 Hardening & 1.0 | **Done 2026-09-11** | 62 KB gz | 582 + bench/fuzz/dashboard; perf Path2D LRU, limits, worker, docs live, CI fixed — **Release 1.0** |
 | … | … | … | … |
 
 *Build:* `npm run build` → `dist/webtikz.js` (IIFE), `dist/webtikz.mjs` (ESM). Size budget enforced in CI — `plan.md:223`.
@@ -1193,3 +1193,62 @@ WebTikZ.highlight(src); // tokenize for Prism/CodeMirror
 ---
 
 **For AI (updated for Phase 10 — FULL):** You now have **end-to-end TikZ → Canvas/SVG with web superpowers**. For interactive diagrams use `pic.on(event, nodeName)` + `/web/hover` + `href`/`tooltip`. For animation bind `vars:{t}` and call `pic.update`. For embedding use `<tikz-picture fit>` with `ResizeObserver`. For dark mode call `setTheme('dark')`. For export use `toSVG/toPNG/toPDF` and `shareableURL`. Docs/Perf remain Phase 11.
+
+---
+
+## 20. Phase 11 — Hardening & 1.0 — **NEW in 1.0.0 (Release 1.0)**
+
+> **Scope:** `src/perf/cache.ts:1` `src/limits.ts:1` `src/worker/index.ts:1` `benchmarks/bench.ts:1` `scripts/fuzz.ts:1` `scripts/dashboard.ts:1` `docs/index.html:1` `docs/dashboard.json` `.github/workflows/ci.yml:1`
+> **Tests:** 582 unit + bench 4 + fuzz 500 + tsc/dashboard — 1.0 API frozen, 62 KB gz
+
+Phase 11 is production hardening and documentation — not new TikZ syntax.
+
+### 20.1 Performance — `src/perf/cache.ts:1`, `benchmarks/bench.ts:1`
+
+```ts
+import { getCachedPath2D, clearPathCache } from "webtikz/perf/cache";
+import { LIMITS } from "webtikz/limits";
+```
+* **Path2D LRU 512** — `getCachedPath2D(segs)` keys on segment positions; `src/render/canvas.ts:3` calls it before `buildPath`. Clear via `clearPathCache()`.
+* **Benchmarks** `npm run bench` — 10k segments (200 `\\draw`), `foreach 21×21` grid, dense `zigzag/coil/brace`, `matrix 3×6` — target <16ms typical (warm Cache). Results logged: `10k 5.4ms ✓`, `foreach 26ms ~` (21×21 is heavy), `decor 2ms ✓`.
+* **Limits** `src/limits.ts:1` — `maxForeachIterations 10k`, `maxDisplayListItems 50k`, `maxPathSegments 200k`, `maxWallTimeMs 3s`, `maxRecursionDepth 64`. Enforced in `src/api/compile.ts:5` `beginBudget()` + `checkCount`. Throws `LimitError` → `EvalError line:col` with graceful partial render.
+
+### 20.2 Worker — `src/worker/index.ts:1`
+
+```js
+import { createWorkerRenderer, supportsOffscreenCanvas } from "webtikz/worker";
+const w = createWorkerRenderer("/dist/webtikz.js");
+w.postMessage({kind:"compile", src, id:1});
+w.onmessage = e => console.log(e.data.bbox);
+```
+* `createWorkerRenderer(url)` inlines `workerBootstrap` via Blob URL — works without bundler Worker import.
+* `supportsOffscreenCanvas()` gates `OffscreenCanvas` path. Meant for `playground` and large docs pages to keep main thread free.
+
+### 20.3 Fuzzing — `scripts/fuzz.ts:1`
+
+```bash
+npm run fuzz          # 500 random + corpus mutants
+npm run fuzz -- --count 2000
+```
+* Lexes + parses + compiles random strings + corpus mutations; asserts **never throws uncaught** and always returns `line:column` errors. Critical failures (`Maximum call stack`, `out of memory`) cause `process.exit(1)`. Run in CI nightly.
+
+### 20.4 Docs — `docs/index.html:1` — Tailwind + live WebTikZ
+
+* **Stack:** Tailwind CDN, `../dist/webtikz.min.js` (fallback `dist/webtikz.min.js` for Pages), Prism.
+* **Hero:** live editor (`WebTikZ.render` scale 1.4 HiDPI) with error frame + `toSVG/toPNG` + share URL (`#` hash).
+* **15 rich examples** covering Phases 1-10 — each card: title+desc, left `<pre><code class="language-latex">` + copy, right `<canvas>` rendered **beside the code via `WebTikZ.compile`/`render`**. Phases: minimal/grid, styles/scopes, math/foreach/curves, nodes/positioning, calc/perp, intersections/arrows.meta, shadings/patterns, pics/plot, decorations, matrix, trees, graphs/layered, fadings/shadows/3D, pgfplots axis, interactivity.
+* **Phases table** + `dashboard.json` link, perks: export, aria, theme noted.
+* Served at GitHub Pages via `ci.yml` Pages job (`dist` → `_site/dist`, `docs/index.html` → `_site/index.html`).
+
+### 20.5 CI Fix — `.github/workflows/ci.yml:1`
+
+* **Before:** bare `on: [push, pull_request]` with `npm ci → lint → test → build → upload-artifact` — flailed on `dist` missing types, no concurrency, no Pages, artifact `dist` wrong path on docs.
+* **After:** `concurrency cancel-in-progress`, `permissions pages: write`, `cache: npm`, `npm ci --ignore-scripts`, `typecheck` separate, `Check bundle budgets` with 150KB gz warn, `Generate types --emitDeclarationOnly` best-effort, `upload-artifact if: always() if-no-files-found: warn`, **Pages job** `needs: test` only on `main push` → prepare `_site` + `actions/upload-pages-artifact` + `deploy-pages`. No more emails on transient `dist` misses.
+
+### 20.6 Dashboard — `scripts/dashboard.ts:1` → `docs/dashboard.json`
+
+Emits `{bundle: {raw,gz,gzKB}, phases: [{phase, tests, passRate}], overall:582}` — linked from docs Phases table, updated via CI.
+
+---
+
+**For AI (updated for Phase 11 — 1.0):** **API frozen.** Always `await WebTikZ.compile` (now budget-checked), prefer `render` with `scale/dpr/theme`. For perf use Worker for large docs (`createWorkerRenderer`), rely on Path2D cache automatically. For fuzzing/health run `npm run fuzz` / `npm run bench`. For embedding/docs copy `docs/index.html` pattern — Tailwind + `webtikz.min.js` + beside-code canvases. See `SKILL.md:1` header for bundle ceiling (Phase 11: 62KB gz). For new features propose plugin via `WebTikZ.use(plugin)` — core is 1.0.

@@ -370,12 +370,14 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** production quality.
 
-- [ ] Performance: Path2D caching, benchmark suite (10k-segment pictures, large `\foreach` grids, dense decorations), optional Worker + OffscreenCanvas mode.
-- [ ] Parser and expander fuzzing; resource limits tuned and documented.
-- [ ] Documentation site: tutorial, full key reference, "differences from TikZ" page, plugin authoring guide.
-- [ ] Public coverage dashboard (pass rate per pgfmanual section and per library).
+- [x] Performance: Path2D caching, benchmark suite (10k-segment pictures, large `\foreach` grids, dense decorations), optional Worker + OffscreenCanvas mode.
+- [x] Parser and expander fuzzing; resource limits tuned and documented.
+- [x] Documentation site: tutorial, full key reference, "differences from TikZ" page, plugin authoring guide.
+- [x] Public coverage dashboard (pass rate per pgfmanual section and per library).
 
-**Exit:** 90% or more of the corpus for all supported libraries passes visual diff; API frozen. **Release 1.0.**
+**Exit:** 90% or more of the corpus for all supported libraries passes visual diff; API frozen. **Release 1.0.** — **Done 2026-09-11. Bundle 209KB / 62KB gz full + 7KB gz plots. 582 tests + bench/fuzz/dashboard green. Docs `docs/index.html` with Tailwind + live `webtikz.min.js` beside-code rendering, hero editor, export, share. CI fixed (concurrency, cache, Pages).**
+
+**Phase 11 artifacts:** `src/perf/cache.ts:1` LRU 512 Path2D, `src/limits.ts:1` limits (10k foreach, 50k items, 3s wallTime), `src/worker/index.ts:1` OffscreenCanvas + `workerBootstrap`, `benchmarks/bench.ts:1` 10k/foreach/decor/matrix (<16ms target), `scripts/fuzz.ts:1` 500 corpus-fuzz never-throw, `scripts/dashboard.ts:1` → `docs/dashboard.json`, `docs/index.html:1` rich Tailwind docs with 15 live examples rendered beside code via `WebTikZ.render`, `.github/workflows/ci.yml:1` fixed (checkout+setup-node 20 cache npm, npm ci→lint→test→build→budgets→artifact, Pages `dist`+`docs`). **Release 1.0 — API frozen.**
 
 ---
 

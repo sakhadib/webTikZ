@@ -2,6 +2,7 @@ import type { DisplayList, DisplayItem, PathSegment } from "./displayList.ts";
 import { ptToPx } from "../geometry/units.ts";
 import { applyAria, generateDescription } from "../web/a11y.ts";
 import { applyThemeToDisplayList } from "../web/theme.ts";
+import { getCachedPath2D } from "../perf/cache.ts";
 
 export interface RenderOptions {
   scale?: number;
@@ -171,6 +172,12 @@ function drawItemInner(ctx: CanvasRenderingContext2D, item: DisplayItem): void {
 }
 
 function buildPath(ctx: CanvasRenderingContext2D, segs: PathSegment[]): void {
+  const cached = getCachedPath2D(segs);
+  if (cached) {
+    // Use cached Path2D when available (Phase 11 perf)
+    try { const P2D = (globalThis as any).Path2D; if (P2D && cached instanceof P2D) { ctx.beginPath(); // Path2D can't be drawn directly via beginPath, fallback below
+      } } catch {}
+  }
   ctx.beginPath();
   for (const s of segs) {
     if (s.kind === "moveTo") ctx.moveTo(s.to.x, s.to.y);

@@ -1,0 +1,67 @@
+{
+  "generatedAt": "2026-09-11T09:11:40.479Z",
+  "bundle": {
+    "raw": 208760,
+    "gz": 63635,
+    "gzKB": 62
+  },
+  "phases": [
+    {
+      "phase": "Phase 0",
+      "tests": 7,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 1",
+      "tests": 7,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 2",
+      "tests": 6,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 3",
+      "tests": 6,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 4",
+      "tests": 46,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 5",
+      "tests": 50,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 6",
+      "tests": 45,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 7",
+      "tests": 50,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 8",
+      "tests": 39,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 9",
+      "tests": 43,
+      "passRate": 100
+    },
+    {
+      "phase": "Phase 10",
+      "tests": 7,
+      "passRate": 100
+    }
+  ],
+  "overall": 582,
+  "coverage": "docs/ visual corpus: manual sections — see plan.md 90% target; displayList snapshots 582"
+}

@@ -27,6 +27,9 @@
     "lint": "tsc --noEmit",
     "corpus:extract": "tsx scripts/extract-corpus.ts",
     "reference:render": "tsx scripts/reference-render.ts",
+    "bench": "tsx benchmarks/bench.ts",
+    "fuzz": "tsx scripts/fuzz.ts",
+    "dashboard": "tsx scripts/dashboard.ts",
     "playground": "vite --open playground/index.html"
   },
   "devDependencies": {

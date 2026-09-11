@@ -1,15 +1,92 @@
-name: ci
-on: [push, pull_request]
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install deps
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build (IIFE + ESM + plots)
+        run: npm run build
+
+      - name: Check bundle budgets
+        run: |
+          echo "Checking bundle sizes..."
+          KB=$(gzip -c dist/webtikz.min.js | wc -c)
+          KB=$((KB/1024))
+          echo "webtikz.min.js: ${KB} KB gz"
+          # full bundle (all phases) should stay well under 150 KB gz
+          if [ "$KB" -gt 150 ]; then echo "::warning ::Bundle ${KB} KB gz > 150 KB"; fi
+          # core bundle at Phase 5 was 38 KB gz
+          ls -lh dist/
+
+      - name: Generate types (best-effort)
+        run: npx tsc --emitDeclarationOnly --declaration --outDir dist --allowImportingTsExtensions false 2>&1 | head -20 || echo "::warning ::types generation skipped"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dist-${{ github.sha }}
+          path: dist
+          if-no-files-found: warn
+
+  pages:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
       - run: npm run build
-      - uses: actions/upload-artifact@v4
-        with: { name: dist, path: dist }
+      - name: Prepare docs artifact
+        run: |
+          mkdir -p _site
+          cp -r dist _site/dist
+          cp docs/index.html _site/index.html 2>/dev/null || echo "no docs/index.html yet"
+          # copy playground as fallback
+          cp -r playground _site/playground 2>/dev/null || true
+          ls -R _site | head -40
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

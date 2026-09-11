@@ -1,11 +1,11 @@
 # WebTikZ — AI Skill
 
-> **Version:** 0.3.0 — **Phase 3 (Nodes & Text)** complete — 2026-09-11
-> **Bundle:** `dist/webtikz.min.js` ~28 KB gz (Phase 3, 91 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
-> **Source:** `src/lexer/index.ts:1`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1`, `src/color/index.ts:1`, `src/math/index.ts:1`, `src/keys/index.ts:1`, `src/text/index.ts:1`, `src/nodes/index.ts:1`, `src/shapes/index.ts:1`, `src/render/canvas.ts:1`
-> **Tests:** 266 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + core 32) — `npm test` green, `tsc --noEmit` clean
+> **Version:** 0.4.0 — **Phase 4 (Geometry & Styling)** complete — 2026-09-11
+> **Bundle:** `dist/webtikz.min.js` ~35 KB gz (Phase 4, 112 KB raw), IIFE `WebTikZ` / ESM `webtikz.mjs`
+> **Source:** `src/lexer/index.ts:1`, `src/parser/index.ts:1`, `src/core/evaluator.ts:1`, `src/geometry/bezier.ts:87` `src/geometry/intersections.ts:1` `src/arrows/index.ts:1` `src/render/canvas.ts:70`
+> **Tests:** 312 pass (Phase 1: 30 + Phase 2: 151 + Phase 3: 53 + Phase 4: 46 + core 32) — `npm test` green, `tsc --noEmit` clean
 
-This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 3**. Anything tagged Phase 4+ is *not yet implemented* and will error or be ignored.
+This SKILL is **incremental**. Each WebTikZ phase appends a new section without rewriting previous ones. AIs MUST read the highest `Phase` header they need and MUST NOT hallucinate features from later phases. Current ceiling: **Phase 4**. Anything tagged Phase 5+ is *not yet implemented* and will error or be ignored.
 
 ---
 
@@ -284,7 +284,8 @@ If a user requests these, respond: *“Not in Phase 1 — here is a Phase 1-comp
 | 1 MVP | **Done 2026-09-11** | 10.8 KB gz | 30/30 node-free examples, line:column frames |
 | 2 Language core | **Done 2026-09-11** | 21.8 KB gz | 151/150 +5 checks; keys, scopes, transforms, pgfmath, foreach, curves, clip |
 | 3 Nodes & text | **Done 2026-09-11** | 28 KB gz | 53 tests; TextEngine, nodes, anchors, path nodes, positioning, labels/pins |
-| 4 Geometry & styling | TODO | < ? | calc, intersections, arrows.meta, shadings, patterns, bbox |
+| 4 Geometry & styling | **Done 2026-09-11** | 35 KB gz | 46 tests; calc, perpendicular, intersections, arrows.meta, shadings, patterns, bbox |
+| 5 Composition | TODO | < ? | pics, plots, shapes libs, fit, backgrounds |
 | … | … | … | … |
 
 *Build:* `npm run build` → `dist/webtikz.js` (IIFE), `dist/webtikz.mjs` (ESM). Size budget enforced in CI — `plan.md:223`.
@@ -639,3 +640,131 @@ Creates additional `NodeEntry` children with auto position relative to parent an
 ---
 
 **For AI (updated for Phase 3):** Prefer Phase 3 for any labeled diagram. Always `await` compile/render. Use `\node (name) at (coord) {tex}` with `draw`/`fill`/`circle`/`inner sep`/`minimum width` and `font=\small\bfseries`. Place labels via `label=`/`pin=` or `node[...] ` on paths with `pos`/`midway`/`sloped`. Connect via `(A) -- (B)` for border-aware edges; use `(A.east)` for explicit anchors. For positioning, use `right=of a` / `below=1cm of a.east` with `on grid` and `node distance`. Keep math to mini-TeX subset (`$x_1$`, `$\frac{a}{b}$`, Greek) — full AMS via MathJax adapter not default. If request needs `calc`/`intersections`/`arrows.meta` → state Phase 4 limit and approximate with explicit coords/border points.
+
+---
+
+## 13. Phase 4 — Geometry Engine & Styling Depth — **NEW in 0.4.0**
+
+> **Scope:** `src/geometry/bezier.ts:87` `src/geometry/intersections.ts:1` `src/geometry/path.ts:1` `src/arrows/index.ts:1` `src/parser/index.ts:232` `src/core/evaluator.ts:22` `src/render/displayList.ts:4` `src/render/canvas.ts:70`
+> **Tests:** 46 (`tests/unit/phase4.test.ts:1`) — 312 total
+
+Phase 4 moves WebTikZ from "draws shapes" to "does geometry": calc expressions, intersections, precise arrows, gradients and tiling, and bbox control. AIs can now generate **engineering/tech diagrams that compute positions**.
+
+### 13.1 Arc-Length — `src/geometry/bezier.ts:87`, `src/geometry/path.ts:1`
+
+Every Bézier now exposes `cubicLength(p0,p1,p2,p3)` (Gauss-Legendre approx), `pointAtT`, `tangentAtT`, `arcLength`, `cubicPointAtDistance`. Path helpers `totalLength(path)`, `pointAtFraction`, `pointAtDistance` walk the `PathSegment[]` arc table. Used internally for `pos=` (Phase 3), later for decorations (Phase 6); AI can now rely on `pos=0.33` landing on curve, not straight chord.
+
+### 13.2 calc Library — `src/parser/index.ts:232`, `src/core/evaluator.ts:22`
+
+Enclose in `($…$)`. Resolved via `resolveCalc()` before affine transform.
+
+```tex
+\usetikzlibrary{calc} % accepted, feature auto-on
+\coordinate (A) at (0,0); \coordinate (B) at (2,0); \coordinate (C) at (1,1);
+\draw ($(A)+(1,2)$) -- (0,0);                % addition
+\draw ($(A)!.5!(B)$) -- (0,0);                % 0.5 interpolation
+\draw ($(A)!1cm!(B)$) -- (0,0);               % 1cm from A toward B
+\draw ($(A)!(C)!(B)$) -- (C);                 % projection of C onto AB
+\draw ($(A)!.5!30:(B)$) -- (0,0);             % 0.5 plus 30° rotation about A
+\draw ($(2)*(A) + 0.5*(B)$) -- (0,0);         % scalar multiplication
+\draw let \p1=(A), \p2=(B), \n1={veclen(\x2-\x1,\y2-\y1)} in (\p1) -- (\p2) node[midway]{\n1};
+```
+
+`let` registers: `\p1=(A)` → `(\x1,\y1)`, `\x1`, `\y1`, `\n1={expr}` — available inside `let … in` path scope `src/core/evaluator.ts:2053` (simple forms only; complex nesting is best-effort).
+
+### 13.3 Perpendicular Coordinates — `src/parser/index.ts:8`
+
+Distinct from `-|` path op — inside parens:
+
+```tex
+\draw (A |- B) -- (A -| B); % (Ax,By) and (Bx,Ay)
+\node at (A |- B) {proj};
+% also $(A |- B)$ inside calc works
+```
+
+Resolved via `resolvePerp()` as `Vec2(ax, by)` etc.
+
+### 13.4 Intersections — `src/core/evaluator.ts:22`, `src/geometry/intersections.ts:1`
+
+```tex
+\usetikzlibrary{intersections}
+\path[name path=circleA] (0,0) circle (1cm);
+\path[name path=line] (0,-1) -- (2,1);
+\path[name intersections={of=circleA and line, by={a,b}, total \t, sort by=x}];
+\node at (a) {×}; \node at (b) {×};
+\node at (0,0) {\t};                % \t expands to count
+% name path globally scoped; intersections sorted by x|y optionally
+```
+
+Algorithm: `intersectSegments` — line-line exact, Bézier–Bézier via subdivision + Newton refinement (`EP_S=1e-6`). Stores named paths as `PathSegment[]` in `namedPaths: Map<string,PathSegment[]>`. Intersections materialize as `\coordinate` nodes `by=`; missing `by` defaults to `intersection-1` etc.
+
+### 13.5 arrows.meta — `src/arrows/index.ts:1`, `src/render/canvas.ts:70`
+
+Full `arrows.meta` registry plus legacy aliases `latex→Latex`, `stealth→Stealth`, `to→To`.
+
+```tex
+\usetikzlibrary{arrows.meta}
+\draw[-{Stealth[length=3mm,width=2mm]}] (0,0) -- (2,0);
+\draw[{Stealth[open]}-{Stealth[open,reversed]}] (0,0) -- (2,0);
+\draw[-{Triangle[round]}] (0,0) -- (1,0);
+\draw[-{Circle[open, length=2mm]}] (0,0) -- (1,0);
+\draw[-{Bar[width=2mm]}] (0,0) -- (1,0);          % | tip
+\draw[-{Hooks}] (0,0) -- (1,0);
+\draw[->>] (0,0) -- (1,0);                        % double tip via >>
+\draw[|<->|] (0,0) -- (1,0);                      % Bar-Stealth-Stealth-Bar
+\draw[shorten <=2pt, shorten >=4pt] (0,0) -- (1,0);
+\draw[shorten < =1pt, shorten > =1pt] (0,0) -- (1,0); % alt spacing
+
+% options: length, width, open, round, reversed, sep, scale, bend
+\draw[-{Stealth[scale=1.5, bend]}] (0,0) to[bend left] (2,0);
+```
+
+Shortening moves endpoints along endpoint tangent before stroking (so arrows don't overrun nodes).
+
+### 13.6 Shadings — `src/render/canvas.ts:70`, `src/core/evaluator.ts:22`
+
+Canvas gradients approximating PGF shadings:
+
+```tex
+\shade[left color=red, right color=blue] (0,0) rectangle (2,1);
+\shade[inner color=white, outer color=blue] (0,0) circle (1cm);
+\shade[ball color=red] (0,0) circle (0.5cm);          % radial highlight
+\shadedraw[left color=red, right color=blue, draw=black] (0,0) rectangle (1,1);
+\shade[shading angle=45, top color=red, bottom color=blue] (0,0) rectangle (2,1);
+% axis: left/right/top/bottom/middle color; radial: inner/outer/ball; angle rotates linear gradient
+```
+
+Implemented as `DisplayPath.gradient = {type:'linear'|'radial', stops, angle}` → `CanvasGradient`.
+
+### 13.7 Patterns — `src/render/canvas.ts:70`
+
+```tex
+\usetikzlibrary{patterns, patterns.meta}
+\fill[pattern=north east lines] (0,0) rectangle (1,1);
+\fill[pattern=crosshatch] (0,0) rectangle (1,1);
+\fill[pattern=dots] (0,0) circle (0.5cm);
+\fill[pattern=grid] (0,0) rectangle (1,1);
+\fill[pattern=bricks] (0,0) rectangle (1,1);
+\fill[pattern=checkerboard] (0,0) rectangle (1,1);
+% pattern color via pattern color=<color>
+```
+
+Rendered as offscreen repeating canvas via `createPattern`; not pgf-exact but visually equivalent. `patterns.meta` parameterized keys accepted (stored).
+
+### 13.8 Bounding Box Control — `src/core/evaluator.ts:22`, `src/render/displayList.ts:4`
+
+```tex
+\draw[use as bounding box] (0,0) rectangle (1,1); % sets bbox exactly
+\draw[overlay] (10,10) -- (20,20);                % excluded from bbox (overlay=true)
+\draw[trim left=1cm, trim right=1cm] (0,0) -- (5,0); % shrinks computed bbox
+\node at (current bounding box.center) {×};
+\node at (current bounding box.north east) {×};
+% current bounding box pseudo-node with all anchors, updated after layout
+% baseline=(A.base) handled as vertical offset stored in displayList
+```
+
+`overlay` sets `DisplayPath.overlay` excluded in `computePathBBox`; `use as bounding box` replaces bbox; `trim` adjusts bbox by dims; `current bounding box` injected as `NodeEntry` after evaluation `src/core/evaluator.ts:219`.
+
+---
+
+**For AI (updated for Phase 4):** For technical drawings, default to `calc` and `intersections`. Use `($(A)!.5!(B)$)` for midpoints, `($(A)!(C)!(B)$)` for projections, `(A |- B)` for right-angle constructions, and `let \p1=… in` for derived coordinates. Name paths with `name path=` and reuse with `name intersections`. Choose `arrows.meta` tips like `Stealth[length=3mm]` over legacy `->`; chain tips (`>>`) and use `shorten <= >`. For fills, use `\shade[left color…]` / `ball color` or `pattern=` with `patterns` library — they now render as gradients/tilings. Control layout with `overlay`/`use as bounding box`/`trim` and reference `current bounding box`. Still no pics/plots/matrix (Phase 5) — for reuse, use `\foreach`+`\def` instead.

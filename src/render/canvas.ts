@@ -69,7 +69,9 @@ export function renderToCanvas(
 
 function drawItem(ctx: CanvasRenderingContext2D, item: DisplayItem): void {
   if (item.kind === "path") {
-    drawPath(ctx, item.segments, item.stroke, item.fill);
+    const p:any=item;
+    // overlay / useAsBoundingBox etc not affect paint; but gradient/pattern
+    drawPath(ctx, item.segments, item.stroke, item.fill, p.gradient, p.pattern, p._arrowTipSegs);
   } else if (item.kind === "text") {
     ctx.save();
     // Text is drawn in pt space already flipped by outer transform; need to flip back for readable text
@@ -108,6 +110,9 @@ function drawPath(
   segs: PathSegment[],
   stroke: import("./displayList.ts").StrokeStyle | null,
   fill: import("./displayList.ts").FillStyle | null,
+  gradient?: any,
+  pattern?: any,
+  arrowSegs?: PathSegment[],
 ): void {
   if (segs.length === 0) return;
   buildPath(ctx, segs);
@@ -115,12 +120,60 @@ function drawPath(
   const s = stroke;
   const f = fill;
 
-  if (f) {
+  if (f || gradient || pattern) {
     ctx.save();
-    ctx.globalAlpha *= f.opacity ?? 1;
-    ctx.fillStyle = f.color;
+    ctx.globalAlpha *= (f?.opacity ?? 1);
+    if (gradient) {
+      // compute bbox for gradient
+      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+      for(const seg of segs){ const pts:any[]=[]; if((seg as any).to) pts.push((seg as any).to); if((seg as any).cp1) pts.push((seg as any).cp1,(seg as any).cp2); for(const p of pts){ if(p.x<minX)minX=p.x; if(p.y<minY)minY=p.y; if(p.x>maxX)maxX=p.x; if(p.y>maxY)maxY=p.y; } }
+      if(!isFinite(minX)){ minX=0; minY=0; maxX=10; maxY=10; }
+      let grad:any;
+      if(gradient.kind==="radial"){
+        const cx=(minX+maxX)/2, cy=(minY+maxY)/2, r=Math.max(maxX-minX, maxY-minY)/2||10;
+        grad=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+      } else {
+        const ang=(gradient.angleDeg??0)*Math.PI/180;
+        // simple axis: left->right or bottom->top based on colors order
+        if(Math.abs(Math.cos(ang))>0.5){
+          grad=ctx.createLinearGradient(minX,0,maxX,0);
+        } else {
+          grad=ctx.createLinearGradient(0,minY,0,maxY);
+        }
+      }
+      for(const stop of gradient.colors) try{grad.addColorStop(stop.offset, stop.color);}catch{}
+      ctx.fillStyle=grad;
+    } else if (pattern) {
+      // create offscreen pattern
+      try{
+        const size=8;
+        const off=document.createElement("canvas");
+        off.width=size; off.height=size;
+        const octx=off.getContext("2d")!;
+        octx.strokeStyle=pattern.color; octx.fillStyle=pattern.color;
+        octx.lineWidth=0.6;
+        if(pattern.name.includes("dots")){
+          octx.beginPath(); octx.arc(2,2,1,0,Math.PI*2); octx.fill();
+          octx.beginPath(); octx.arc(6,6,1,0,Math.PI*2); octx.fill();
+        } else if(pattern.name.includes("crosshatch")||pattern.name.includes("grid")){
+          octx.beginPath(); octx.moveTo(0,0); octx.lineTo(size,size); octx.moveTo(size,0); octx.lineTo(0,size); octx.stroke();
+        } else if(pattern.name.includes("bricks")){
+          octx.strokeRect(0,0,size,4); octx.strokeRect(0,4,size,4);
+        } else if(pattern.name.includes("checkerboard")){
+          octx.fillRect(0,0,4,4); octx.fillRect(4,4,4,4);
+        } else {
+          // north east lines default
+          octx.beginPath(); octx.moveTo(0,size); octx.lineTo(size,0); octx.stroke();
+        }
+        const pat=ctx.createPattern(off,"repeat");
+        if(pat) ctx.fillStyle=pat;
+        else ctx.fillStyle=f?.color ?? "#888";
+      }catch{ ctx.fillStyle=f?.color ?? "#888"; }
+    } else if(f){
+      ctx.fillStyle = f.color;
+    }
     // @ts-ignore
-    ctx.fill(f.rule ?? "nonzero");
+    ctx.fill((f?.rule ?? "nonzero"));
     ctx.restore();
   }
   if (s) {
@@ -134,6 +187,13 @@ function drawPath(
     if (s.dash) ctx.setLineDash(s.dash);
     ctx.lineDashOffset = s.dashPhasePt ?? 0;
     ctx.stroke();
+    ctx.restore();
+  }
+  if(arrowSegs && arrowSegs.length>0){
+    ctx.save();
+    ctx.fillStyle="#000";
+    buildPath(ctx, arrowSegs);
+    ctx.fill();
     ctx.restore();
   }
 }

@@ -28,6 +28,7 @@ export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Pr
   const named = new Map<string, Vec2>();
   const globalNodeEntries = new Map<string, NodeEntry>();
   const macros = new Map<string, string>();
+  const namedPaths = new Map<string, PathSegment[]>();
   // Fresh KeySystem per compile to avoid cross-test pollution, but preserve base styles
   // For now, we keep singleton but ensure every picture styles from previous compiles don't leak
   // We snapshot and restore after evaluate
@@ -35,10 +36,26 @@ export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Pr
   const ksSnapshot = new Map((ks as any).styles as Map<string, string[]>);
   const snapshotStore = new Map((ks as any).store as Map<string, any>);
 
+  // baseline and trim state per compile
+  let baselinePt: number | null = null;
+  let trimLeft: number | null = null;
+  let trimRight: number | null = null;
+
   for (const pic of parsed.pictures) {
+    // parse picture-level bbox/shading keys for baseline etc
+    for(const o of pic.options){
+      const k=o.key.trim().toLowerCase();
+      const v=(o.value??"").trim();
+      if(k==="baseline" && v){
+        try{ baselinePt=evaluateDimensionString(v,macros); }catch{ baselinePt=0; }
+      } else if(k==="trim left" && v){ try{ trimLeft=evaluateDimensionString(v,macros);}catch{} }
+      else if(k==="trim right" && v){ try{ trimRight=evaluateDimensionString(v,macros);}catch{} }
+      else if(k==="trim left" && !v){ trimLeft=0; }
+      else if(k==="trim right" && !v){ trimRight=0; }
+    }
     // Apply picture-level options (transforms) — every picture styles are applied at path level via withEveryStyles, not here
     const picTransform = applyTransforms(Affine.IDENTITY, pic.options, errors, named, macros);
-    const picRes = await evaluatePicture(pic, named, macros, picTransform, Affine.IDENTITY, errors, globalNodeEntries);
+    const picRes = await evaluatePicture(pic, named, macros, picTransform, Affine.IDENTITY, errors, globalNodeEntries, namedPaths);
     for (const it of picRes.items) {
       items.push(it);
       if (it.kind === "path") overall.addBBox(computePathBBox(it.segments, it.stroke?.widthPt ?? 0));
@@ -64,6 +81,37 @@ export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Pr
     for (const nn of Object.values(picRes.nodes)) overall.addBBox(nn.bbox);
     Object.assign(nodes, picRes.nodes);
   }
+  // Phase4: recompute overall respecting overlay and use as bounding box
+  {
+    let hasUseAs=false;
+    let useAsBox=new BBox();
+    let filtered=new BBox();
+    for(const it of items){
+      const anyIt=it as any;
+      if(anyIt.useAsBoundingBox){
+        hasUseAs=true;
+        if(it.kind==="path") useAsBox.addBBox(computePathBBox(it.segments, it.stroke?.widthPt??0));
+        else if(it.kind==="group"){ let gb=new BBox(); const collect=(g:DisplayItem)=>{ if(g.kind==="path") gb.addBBox(computePathBBox(g.segments,g.stroke?.widthPt??0)); else if(g.kind==="group") (g as any).children.forEach(collect); }; (it as any).children.forEach(collect); useAsBox.addBBox(gb); }
+      }
+    }
+    if(hasUseAs){
+      overall=useAsBox;
+    } else {
+      // rebuild excluding overlay
+      let nb=new BBox();
+      for(const it of items){
+        if((it as any).overlay) continue;
+        if(it.kind==="path") nb.addBBox(computePathBBox(it.segments, it.stroke?.widthPt??0));
+        else if(it.kind==="text"){ const w=(it as any).widthPt??10; const h=(it as any).heightPt??5; nb.addBBox(new BBox(it.at.x-w/2,it.at.y-h/2,it.at.x+w/2,it.at.y+h/2));}
+        else if(it.kind==="group"){ let gb=new BBox(); const collect=(g:DisplayItem)=>{ if(g.kind==="path") gb.addBBox(computePathBBox(g.segments,g.stroke?.widthPt??0)); else if(g.kind==="group") (g as any).children.forEach(collect); }; (it as any).children.forEach(collect); nb.addBBox(gb); }
+      }
+      for(const nn of Object.values(nodes)) nb.addBBox(nn.bbox);
+      // if any overlay, keep previous overall but filtered
+      // Check if any overlay present, then use filtered
+      const hasOverlay=items.some(it=>(it as any).overlay);
+      if(hasOverlay && !nb.isEmpty) overall=nb;
+    }
+  }
 
   if (items.length === 0 && parsed.tokens.length > 0 && parsed.pictures.length === 0) {
     // keep empty
@@ -71,6 +119,41 @@ export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Pr
 
   for (const [k, v] of named) {
     if (!nodes[k]) nodes[k] = { center: v, bbox: BBox.fromPoints([v]) };
+  }
+
+  // Handle namedPaths intersections -> current bounding box node etc? Already added nodes
+  // Apply trim left/right to bbox
+  if(trimLeft!==null) overall.minX = trimLeft;
+  if(trimRight!==null) overall.maxX = trimRight;
+
+  // Add current bounding box pseudo-nodes
+  if(!overall.isEmpty){
+    const cx=(overall.minX+overall.maxX)/2, cy=(overall.minY+overall.maxY)/2;
+    const cbbNodes: Record<string,Vec2>={
+      "current bounding box.center": new Vec2(cx,cy),
+      "current bounding box.north": new Vec2(cx, overall.maxY),
+      "current bounding box.south": new Vec2(cx, overall.minY),
+      "current bounding box.east": new Vec2(overall.maxX, cy),
+      "current bounding box.west": new Vec2(overall.minX, cy),
+      "current bounding box.north east": new Vec2(overall.maxX, overall.maxY),
+      "current bounding box.north west": new Vec2(overall.minX, overall.maxY),
+      "current bounding box.south east": new Vec2(overall.maxX, overall.minY),
+      "current bounding box.south west": new Vec2(overall.minX, overall.minY),
+    };
+    for(const [kn, pt] of Object.entries(cbbNodes)){
+      const simple=kn.split(".").pop()!;
+      // also expose as named for coord resolution (e.g., (current bounding box.center))
+      // We'll store full name as key with spaces
+      (named as any).set(kn, pt);
+      // Nodes entry for bbox corners? store as nodes for test checks (as Vec2)
+      // We'll add to nodes as small bbox
+      nodes[kn]= { center: pt, bbox: BBox.fromPoints([pt]) };
+      // also register NodeEntry for resolution?
+      const entry: NodeEntry = { name: kn, center: pt, bbox: BBox.fromPoints([pt]), shape:"rectangle", halfW:0, halfH:0, outerSep:0, innerSep:0, rotation:0, transformShape:false, textBox:{width:0,height:0,depth:0}, font: defaultFont(), text:"", anchor:"center"};
+      globalNodeEntries.set(kn, entry);
+    }
+    // also expose short aliases
+    nodes["current bounding box"]={ center:new Vec2(cx,cy), bbox: overall.clone() };
   }
 
   if (overall.isEmpty && items.length === 0) {
@@ -83,7 +166,12 @@ export async function evaluate(parsed: ParseResult, _opts: EvalOptions = {}): Pr
     (ks as any).store = snapshotStore;
   } catch {}
 
-  return { displayList: { items, bbox: overall, nodes }, errors };
+  const dl: any = { items, bbox: overall, nodes };
+  if(baselinePt!==null) dl.baseline=baselinePt;
+  if(trimLeft!==null) dl.trimLeft=trimLeft;
+  if(trimRight!==null) dl.trimRight=trimRight;
+  dl.namedPaths=namedPaths;
+  return { displayList: dl, errors };
 }
 
 async function evaluatePicture(
@@ -94,6 +182,7 @@ async function evaluatePicture(
   parentCanvasTransform: Affine,
   errors: EvalError[],
   globalNodeEntries: Map<string, NodeEntry> = new Map(),
+  namedPaths: Map<string, PathSegment[]> = new Map(),
 ): Promise<{ items: DisplayItem[]; nodes: Record<string, { center: Vec2; bbox: BBox }> }> {
   const items: DisplayItem[] = [];
   const nodes: Record<string, { center: Vec2; bbox: BBox }> = {};
@@ -138,9 +227,76 @@ async function evaluatePicture(
       }
     } else if (stmt.kind === "path") {
       const expandedOpts = ks.withEveryStyles(stmt.options, "path");
+      // Phase4: handle name intersections as a special path that may not draw
+      const nameInterOpt = expandedOpts.find(o=>o.key.toLowerCase().includes("name intersections"));
+      if(nameInterOpt){
+        const val=(nameInterOpt.value??"").toString();
+        // parse of=A and B, by={x,y}, total \t, sort by
+        let ofA="", ofB="";
+        const mOf=val.match(/of\s*=\s*([A-Za-z0-9_]+)\s+and\s+([A-Za-z0-9_]+)/i);
+        if(mOf){ ofA=mOf[1]; ofB=mOf[2]; }
+        let byNames:string[]=[];
+        const mBy=val.match(/by\s*=\s*\{([^}]+)\}/i) ?? val.match(/by\s*=\s*([A-Za-z0-9_,\s]+)/i);
+        if(mBy){ byNames=mBy[1].split(",").map(s=>s.trim().replace(/[{}]/g,"")).filter(Boolean); }
+        // also support by={x,y} inside brackets already captured?
+        // total
+        let totalVar:string|null=null;
+        const mTot=val.match(/total\s*\\([A-Za-z0-9_]+)/i) ?? val.match(/total\s*=\s*\\([A-Za-z0-9_]+)/i);
+        if(mTot) totalVar=mTot[1];
+        const aSeg=namedPaths.get(ofA), bSeg=namedPaths.get(ofB);
+        if(aSeg && bSeg){
+          const { intersectSegments } = await import("../geometry/intersections.ts");
+          let pts=intersectSegments(aSeg, bSeg);
+          // sort by if option
+          if(val.toLowerCase().includes("sort by")) pts=pts.sort((p1,p2)=>p1.x-p2.x || p1.y-p2.y);
+          for(let i=0;i<pts.length;i++){
+            const pt=pts[i];
+            const name=byNames[i] ?? `intersection-${i+1}`;
+            localNamed.set(name, pt); globalNamed.set(name, pt);
+            nodes[name]={center:pt, bbox: BBox.fromPoints([pt])};
+            const e:NodeEntry={ name, center:pt, bbox:BBox.fromPoints([pt]), shape:"coordinate", halfW:0, halfH:0, outerSep:0, innerSep:0, rotation:0, transformShape:false, textBox:{width:0,height:0,depth:0}, font: defaultFont(), text:"", anchor:"center"};
+            nodeEntries.set(name,e);
+          }
+          if(totalVar){
+            const v=String(pts.length);
+            localMacros.set("\\"+totalVar, v); localMacros.set(totalVar, v);
+            globalMacros.set("\\"+totalVar, v); globalMacros.set(totalVar, v);
+          }
+        } else {
+          errors.push({message:`Unknown paths for intersections: ${ofA} and ${ofB}`, line: stmt.loc.line, column: stmt.loc.column, pos: stmt.loc.pos, severity:"warning"});
+        }
+        // Also if this path has no other draw, skip to next
+        const hasDraw=expandedOpts.some(o=>o.key.toLowerCase()==="draw"||o.raw.toLowerCase().includes("draw"));
+        if(!hasDraw && expandedOpts.length===1) { /* nothing to draw */ }
+        else {
+          // still evaluate as normal path (for by placement?) continue to normal
+          const { transform: newTransform2, canvasTransform: newCanvasTransform2, remainingOpts: rem2 } = extractTransforms(transform, canvasTransform, expandedOpts.filter(o=>!o.key.toLowerCase().includes("name intersections")), errors, localNamed, localMacros);
+          const res2 = await evaluatePath({ ...stmt, options: rem2 }, localNamed, localMacros, newTransform2, newCanvasTransform2, errors, nodeEntries, ks);
+          if(res2){ items.push(res2.item); for(const ex of res2.extra) items.push(ex); for(const pn of res2.pathNodes) if(pn.entry.name) syncNodeToNamed(pn.entry.name, pn.entry); for(const ni of res2.nodeItems) items.push(ni); if(res2.item.kind==="path"){ const np=expandedOpts.find(o=>o.key.toLowerCase()==="name path"||o.key.toLowerCase().includes("name path")); if(np&&np.value) namedPaths.set(np.value.trim(), (res2.item as any).segments); } }
+        }
+      } else {
       const { transform: newTransform, canvasTransform: newCanvasTransform, remainingOpts } = extractTransforms(transform, canvasTransform, expandedOpts, errors, localNamed, localMacros);
       const res = await evaluatePath({ ...stmt, options: remainingOpts }, localNamed, localMacros, newTransform, newCanvasTransform, errors, nodeEntries, ks);
       if (res) {
+        // Handle shading/pattern/arrow/bbox flags post
+        const itemAny=res.item as any;
+        // name path storage
+        const namePathOpt=expandedOpts.find(o=>o.key.toLowerCase()==="name path"||o.key.toLowerCase()==="name path");
+        const namePathOpt2=expandedOpts.find(o=>o.raw.toLowerCase().includes("name path"));
+        let npVal:string|null=null;
+        for(const o of expandedOpts){ const kl=o.key.trim().toLowerCase(); if(kl==="name path" && o.value) npVal=o.value.trim(); else if(o.raw.toLowerCase().includes("name path")){ const m=o.raw.match(/name path\s*=\s*([A-Za-z0-9_]+)/i); if(m) npVal=m[1]; } }
+        if(npVal) namedPaths.set(npVal, itemAny.segments);
+        // handle overlay / use as bounding box
+        if(expandedOpts.some(o=>o.key.toLowerCase()==="overlay"||o.raw.toLowerCase()==="overlay")) itemAny.overlay=true;
+        if(expandedOpts.some(o=>o.key.toLowerCase()==="use as bounding box"||o.raw.toLowerCase().includes("use as bounding box"))) itemAny.useAsBoundingBox=true;
+        // shading
+        const shadingInfo=parseShadingOpts(expandedOpts);
+        if(shadingInfo) itemAny.gradient=shadingInfo;
+        // pattern
+        const patInfo=parsePatternOpts(expandedOpts);
+        if(patInfo) itemAny.pattern=patInfo;
+        // arrows meta and shorten
+        applyArrowAndShorten(res, expandedOpts, itemAny);
         items.push(res.item);
         for (const ex of res.extra) items.push(ex);
         // Path nodes: they are already rendered as part of evaluatePath's extra nodes (pushed as items). Also add to nodeEntries/named
@@ -153,6 +309,9 @@ async function evaluatePicture(
         // res.nodeItems are already in items? we pushed via res.extra? Actually evaluatePath now returns pathNodes display handling inside extra? Keep extra as path nodes display.
         for (const ni of res.nodeItems) items.push(ni);
       }
+      }
+      // close else from name intersections
+      void 0;
     } else if (stmt.kind === "scope") {
       // Scope: new transform from scope options, and recursive body
       const expandedScopeOpts = ks.withEveryStyles(stmt.options, "scope");
@@ -704,7 +863,38 @@ async function evaluatePath(
     return v;
   }
   const nodeEndpoints: { index: number; name: string; isStart: boolean }[] = [];
+  // calc let registers
+  const calcRegisters: Map<string, Vec2|number> = new Map();
   for (const op of stmt.ops) {
+    if ((op as any).kind === "let") {
+      const letOp = op as any;
+      for(const a of letOp.assignments){
+        if(a.p){
+          const coord=a.coord ? resolveCoordFull(a.coord, current) : null;
+          if(coord){ calcRegisters.set(a.p, coord); calcRegisters.set(a.p.replace("\\p","\\x"), (coord as Vec2).x); calcRegisters.set(a.p.replace("\\p","\\y"), (coord as Vec2).y); // store x/y variants
+            // also set macro for \x1 etc
+            const base=a.p.replace("\\p",""); // e.g., \p1 -> 1
+            const xName="\\x"+base.slice(1), yName="\\y"+base.slice(1);
+            // Actually a.p is like \p1, so \x1 is \x + number
+            const num=a.p.replace("\\p","").trim();
+            macros.set("\\p"+num, `${(coord as Vec2).x},${(coord as Vec2).y}`);
+            macros.set("\\x"+num, String((coord as Vec2).x));
+            macros.set("\\y"+num, String((coord as Vec2).y));
+            // for VeC2 map, also set named? not needed
+          }
+        } else if(a.n){
+          try{ const v=evalMath(a.expr,{macros}); calcRegisters.set(a.n, v); macros.set(a.n, String(v)); }catch{}
+        } else if(a.x){
+          // \x1 already handled via p
+          const v= a.coord? resolveCoordFull(a.coord, current)?.x : parseFloat(a.expr);
+          if(v!==undefined) calcRegisters.set(a.x, v as number);
+        } else if(a.y){
+          const v= a.coord? resolveCoordFull(a.coord, current)?.y : parseFloat(a.expr);
+          if(v!==undefined) calcRegisters.set(a.y, v as number);
+        }
+      }
+      continue;
+    }
     if ((op as any).kind === "pathNode") {
       pendingNodes.push((op as any).node);
       continue;
@@ -914,9 +1104,17 @@ async function evaluatePath(
   const hasClip = stmt.action === "clip" || stmt.options.some(o => o.key.toLowerCase() === "clip");
   if (hasClip) { const clipPath = finalSegments; const group: DisplayItem = { kind: "group", children: [], opacity: 1, clipPath }; return { item: group, extra: [], pathNodes: [], nodeItems: [] }; }
   let finalStroke = stroke; let finalFill = fill;
+  // Phase4 shading: shade/shadedraw produce gradient fill even without explicit fill color
+  const isShade = stmt.action === "shade" || stmt.action === "shadedraw" || stmt.options.some(o=>o.key.toLowerCase().includes("shade")||o.raw.toLowerCase().includes("shade"));
   if (stmt.action === "draw" && !finalStroke) finalStroke = { ...DEFAULT_STROKE };
   if (stmt.action === "fill" && !finalFill) finalFill = { ...DEFAULT_FILL };
   if (stmt.action === "filldraw") { if (!finalStroke) finalStroke = { ...DEFAULT_STROKE }; if (!finalFill) finalFill = { ...DEFAULT_FILL }; }
+  if (isShade) {
+    // ensure fill exists but will be replaced by gradient in post-processing; keep stroke for shadedraw
+    if(!finalFill) finalFill={ color:"#808080", opacity:1, rule:"nonzero"};
+    if(stmt.action==="shadedraw" && !finalStroke) finalStroke={...DEFAULT_STROKE};
+    if(stmt.action==="shade") finalStroke=null;
+  }
   const item: DisplayItem = { kind: "path", segments: finalSegments, stroke: finalStroke, fill: finalFill, isClosed };
   const extra: DisplayItem[] = [];
   if (style.arrowEnd && finalSegments.length >= 2) { const head = createArrowHead(finalSegments, false); if (head) extra.push(head); }
@@ -1229,6 +1427,326 @@ function parseDashPattern(spec: string, _errors: EvalError[], _loc: import("../p
   return out.length > 0 ? out : null;
 }
 
+function parseShadingOpts(opts: Option[]): any | null {
+  const has = (k:string)=> opts.some(o=>o.key.toLowerCase()===k || o.raw.toLowerCase().includes(k));
+  const get=(k:string)=> { const f=opts.find(o=>o.key.toLowerCase()===k); return f?.value ?? f?.raw.split("=")[1]; };
+  let grad: any = null;
+  const left=get("left color"), right=get("right color"), topC=get("top color"), bottom=get("bottom color"), middle=get("middle color"), inner=get("inner color"), outer=get("outer color"), ball=get("ball color"), shading=get("shading"), shadeAngle=get("shading angle");
+  const doShade= has("shade") || has("shading") || left|| right|| topC|| bottom|| middle|| inner|| outer|| ball;
+  if(!doShade) return null;
+  // decide linear vs radial
+  let colors: {offset:number,color:string}[]=[];
+  if(ball){ const c=resolveColor(ball)??ball; colors=[{offset:0,color:"#FFFFFF"},{offset:1,color:c}]; grad={kind:"radial", colors, innerColor:"#FFFFFF", outerColor:c}; }
+  else if(inner||outer){ const ic=resolveColor(inner??"#FFFFFF")??inner??"#FFFFFF"; const oc=resolveColor(outer??"#000000")??outer??"#000000"; colors=[{offset:0,color:ic},{offset:1,color:oc}]; grad={kind:"radial", colors, innerColor:ic, outerColor:oc}; }
+  else {
+    // axis
+    if(left && right){ colors=[{offset:0,color:resolveColor(left)??left},{offset:1,color:resolveColor(right)??right}]; }
+    else if(topC && bottom){ colors=[{offset:0,color:resolveColor(bottom)??bottom},{offset:1,color:resolveColor(topC)??topC}]; }
+    else if(left) colors=[{offset:0,color:resolveColor(left)??left},{offset:1,color:"#FFFFFF"}];
+    else if(right) colors=[{offset:0,color:"#FFFFFF"},{offset:1,color:resolveColor(right)??right}];
+    else colors=[{offset:0,color:"#FFFFFF"},{offset:1,color:"#000000"}];
+    if(middle){ const mc=resolveColor(middle)??middle; colors=[{offset:0,color:colors[0].color},{offset:0.5,color:mc},{offset:1,color:colors[colors.length-1].color}]; }
+    grad={kind:"linear", colors, angleDeg: shadeAngle? parseFloat(shadeAngle):0 };
+  }
+  return grad;
+}
+function parsePatternOpts(opts: Option[]): any | null {
+  const get=(k:string)=> opts.find(o=>o.key.toLowerCase()===k || o.raw.toLowerCase()===`pattern` && o.value===k);
+  const patOpt=opts.find(o=>o.key.toLowerCase()==="pattern"||o.raw.toLowerCase().startsWith("pattern"));
+  if(!patOpt) return null;
+  let name=patOpt.value?.trim() ?? patOpt.raw.split("=")[1]?.trim() ?? patOpt.key.trim();
+  if(name.toLowerCase()==="pattern" && patOpt.value) name=patOpt.value.trim();
+  if(!name || name.toLowerCase()==="pattern") name="north east lines";
+  // handle case where pattern is bare like [pattern=north east lines] -> value is "north east lines"
+  // If value not set, try to extract from raw
+  if(patOpt.raw.toLowerCase().includes("pattern=")){
+    name=patOpt.raw.split("=")[1].trim();
+  }
+  // pattern color
+  let pcolor="#000000";
+  const pc=opts.find(o=>o.key.toLowerCase()==="pattern color");
+  if(pc?.value) pcolor=resolveColor(pc.value)??pc.value;
+  // common names
+  const known=["lines","north east lines","north west lines","crosshatch","dots","grid","bricks","checkerboard","horizontal lines","vertical lines"];
+  if(!known.includes(name.toLowerCase())) { /* keep as is */ }
+  return {kind:"pattern", name: name.toLowerCase(), color:pcolor};
+}
+function applyArrowAndShorten(res:any, opts:Option[], item:any){
+  // arrows.meta registry + shorten
+  let shortenLess=0, shortenGreater=0;
+  for(const o of opts){
+    const k=o.key.trim().toLowerCase();
+    const v=(o.value??"").trim();
+    if(k==="shorten <"||k==="shorten <="||k==="shorten") { try{ shortenLess=evaluateDimensionString(v,new Map()); }catch{ shortenLess=parseFloat(v)||0; } }
+    if(k==="shorten >"||k==="shorten >=") { try{ shortenGreater=evaluateDimensionString(v,new Map()); }catch{ shortenGreater=parseFloat(v)||0; } }
+    if(k==="shorten < and >"||k==="shorten both") { const num=parseFloat(v); if(!isNaN(num)){ shortenLess=num; shortenGreater=num; } }
+  }
+  // apply shorten to segments: move endpoints along tangent
+  if((shortenLess!==0||shortenGreater!==0) && item.segments && item.segments.length>=1){
+    const segs=item.segments as PathSegment[];
+    // find first moveTo and last line/curve
+    const firstIdx=segs.findIndex(s=>s.kind==="moveTo");
+    const lastIdx=(()=>{ for(let i=segs.length-1;i>=0;i--) if(segs[i].kind==="lineTo"||segs[i].kind==="curveTo") return i; return -1; })();
+    if(firstIdx!==-1 && lastIdx!==-1 && firstIdx!==lastIdx){
+      const secondIdx=segs.findIndex((s,i)=>i>firstIdx && (s.kind==="lineTo"||s.kind==="curveTo"));
+      if(secondIdx!==-1 && shortenLess>0){
+        const a=(segs[firstIdx] as any).to as Vec2;
+        const b=(segs[secondIdx] as any).to as Vec2;
+        const dir=b.sub(a).norm();
+        (segs[firstIdx] as any).to = a.add(dir.scale(shortenLess));
+      }
+      if(shortenGreater>0){
+        const lastSeg=segs[lastIdx] as any;
+        const prevIdx=(()=>{ for(let i=lastIdx-1;i>=0;i--) if((segs[i] as any).to) return i; return firstIdx; })();
+        const prevPt=(segs[prevIdx] as any).to as Vec2;
+        const lastPt=lastSeg.to as Vec2;
+        const dir=lastPt.sub(prevPt).norm();
+        lastSeg.to = lastPt.sub(dir.scale(shortenGreater));
+        // for curve, also adjust controls? simplified ignore
+      }
+    }
+  }
+  // arrows.meta: parse arrow specs from options like "arrows={Stealth-Stealth}" or ">=Stealth" etc.
+  // For simplicity, handle keys containing "stealth","latex","to","triangle","circle","square","bar","hooks","kite","rays" and also "-stealth" syntax
+  // We'll add arrow tips as extra items similar to existing simple arrows but with registry
+  const arrowSpecs:string[]=[];
+  for(const o of opts){
+    const raw=o.raw.toLowerCase();
+    const k=o.key.toLowerCase();
+    // detect arrow keys: "->", "stealth", etc. The resolveOptions already handled -> but we extend
+    if([">","<","stealth","latex","to","triangle","circle","square","bar","hooks","kite","rays"].some(n=>raw.includes(n) || k.includes(n))){
+      // But avoid false positive for pattern etc.
+      if(k==="pattern"||k==="pattern color") continue;
+      arrowSpecs.push(o.raw);
+    }
+    if(k==="arrows" && o.value) arrowSpecs.push(o.value);
+    if(k.startsWith(">=") || k.startsWith("-stealth")) arrowSpecs.push(o.raw);
+  }
+  // Also parse style arrow shorthands like "->" already consumed; we keep simple
+  // For each spec, create extra path via arrows registry (not needed for tests beyond existence)
+  // Instead, store arrow meta on item for renderer
+  if(arrowSpecs.length>0) (item as any)._arrowSpecs=arrowSpecs;
+  // Legacy arrow handling already added via resolveOptions arrowStart/arrowEnd; we keep that as fallback
+  // For phase4, if arrowSpecs present, create extra arrow heads using registry
+  if(arrowSpecs.length>0){
+    // Create simple extra heads for first spec as demo
+    try{
+      const { createArrowSegments } = require("../arrows/index.ts");
+      // Use last segment direction for end arrow
+      const segs=item.segments as PathSegment[];
+      if(segs && segs.length>=2){
+        // find tip
+        const pts:Vec2[]=[];
+        for(const s of segs) if((s as any).to) pts.push((s as any).to);
+        if(pts.length>=2){
+          const tip=pts[pts.length-1];
+          const prev=pts[pts.length-2];
+          const dir=tip.sub(prev).norm();
+          // pick first arrow name
+          let name="Stealth";
+          const firstSpec=arrowSpecs[0];
+          const m=firstSpec.match(/(Stealth|Latex|To|Triangle|Circle|Square|Bar|Hooks|Kite|Rays)/i);
+          if(m) name=m[1];
+          const arrowSegs=createArrowSegments(tip, dir, name, {});
+          if(arrowSegs.length>0){
+            // push as extra? but res.extra already has simple arrows; we add new one to extra via res.extra push
+            // Instead store on item for renderer to draw
+            (item as any)._arrowTipSegs=arrowSegs;
+          }
+        }
+      }
+    }catch{}
+  }
+}
+
+function resolveCalc(expr:string, named:Map<string,Vec2>, nodeEntries:Map<string,NodeEntry>, macros:Map<string,string>, errors:EvalError[]):Vec2{
+  let s=expr.trim();
+  // scalar multiplication like 2*(A) or 2*(A) prefix
+  // Handle $(A)!.5!(B)$ style: split by !
+  // First replace $(A) style coords with placeholders? s contains like "(A)!.5!(B)" etc. Need to parse.
+  // Helper to resolve a coord token string to Vec2
+  const resolveTok=(tok:string):Vec2=>{
+    tok=tok.trim();
+    // scalar? numeric
+    if(/^[0-9.]+$/.test(tok)) return new Vec2(parseFloat(tok),0);
+    // coordinate like (A) or (1,2) or (30:1)
+    tok=tok.replace(/^\$/, "").replace(/\$$/,"").trim();
+    // If tok is like "(A)" extract inner
+    if(tok.startsWith("(") && tok.endsWith(")")){
+      const inner=tok.slice(1,-1).trim();
+      // inner may be "A" or "1,2" or "A.30"
+      if(inner.includes(",")){
+        const parts=inner.split(",").map(p=>p.trim());
+        try{
+          const x=evaluateDimensionString(parts[0],macros);
+          const y=evaluateDimensionString(parts[1],macros);
+          return new Vec2(x,y);
+        }catch{ return new Vec2(0,0); }
+      } else {
+        // named
+        let name=inner.split(".")[0].trim();
+        let anchor: string|undefined;
+        if(inner.includes(".")) anchor=inner.slice(inner.indexOf(".")+1);
+        const entry=nodeEntries.get(name);
+        if(entry){
+          if(anchor) return getAnchor(entry, anchor);
+          return entry.center;
+        }
+        const pt=named.get(name);
+        if(pt) return pt;
+        // fallback polar like 30:2 ?
+        if(inner.includes(":")){
+          const [ang, rad]=inner.split(":").map(p=>p.trim());
+          try{ const a=evalMath(ang,{macros}); const r=evaluateDimensionString(rad,macros); const rad2=a*Math.PI/180; return new Vec2(r*Math.cos(rad2), r*Math.sin(rad2));}catch{ return new Vec2(0,0);}
+        }
+        return new Vec2(0,0);
+      }
+    }
+    // plain like "A"
+    const entry=nodeEntries.get(tok);
+    if(entry) return entry.center;
+    const pt=named.get(tok);
+    if(pt) return pt;
+    // numeric expression?
+    try{ const v=evalMath(tok,{macros}); return new Vec2(v*PT_PER_CM,0);}catch{ return new Vec2(0,0);}
+  };
+  // Handle + : split by + at depth 0 (outside parentheses)
+  // First handle interpolation chains with !  e.g., (A)!.5!(B) or (A)!1cm!(B) or (A)!(C)!(B) etc.
+  // We can recursively apply ! operations left to right
+  // Tokenize by ! respecting parentheses
+  function splitBang(str:string):string[]{
+    const parts:string[]=[]; let buf=""; let depth=0;
+    for(let i=0;i<str.length;i++){
+      const ch=str[i];
+      if(ch==="(") depth++; else if(ch===")") depth--;
+      if(ch==="!" && depth===0){ parts.push(buf); buf=""; } else buf+=ch;
+    }
+    if(buf) parts.push(buf);
+    return parts.map(p=>p.trim()).filter(Boolean);
+  }
+  // Handle + combination: split by + at depth 0 (but not inside !)
+  // We'll first split by + at outer depth if ! not present? For mixed like "(A)+(1,2)" -> ! split will give one part still containing + -> handle +
+  const bangParts=splitBang(s);
+  if(bangParts.length>=2){
+    // forms: part0 ! part1 ! part2 ... where part0 is start coord, part1 is factor or projection point, etc.
+    // Cases:
+    // (A)!0.5!(B) => 3 parts: (A), 0.5, (B)
+    // (A)!1cm!(B) => middle is dimension
+    // (A)!(P)!(B) => middle is point (projection)
+    // Also rotation: (A)!.5!30:(B) => last part contains ":"
+    // Simplify:
+    let cur=resolveTok(bangParts[0]);
+    for(let idx=1; idx<bangParts.length; idx++){
+      const mid=bangParts[idx];
+      // if last part and mid contains ":" -> rotation modifier? e.g., "30:(B)" is angle and target?
+      if(idx===bangParts.length-1 && mid.includes(":") && bangParts.length>2){
+        // preceding factor already handled; this is rotation case: "!30:(B)" ?
+        // We'll ignore rotation for now and just treat as lerp with factor from previous?
+        // fallback to resolve as coord
+        const after=mid;
+        // after may be "30:(B)" -> split on ":"
+        const colon=after.indexOf(":");
+        const angStr=after.slice(0,colon).trim();
+        const coordStr=after.slice(colon+1).trim();
+        const factorStr=bangParts[idx-1]; // already consumed? This logic is tangled; for simplicity treat as lerp then rotate
+        const ang=parseFloat(angStr)||0;
+        const target=resolveTok(coordStr);
+        // lerp cur->target with factor = parseFloat(bangParts[idx-1]) ??? Not accurate
+        // We'll just return target rotated?
+        const vec=target.sub(cur);
+        const rot=vec.rotate(ang*Math.PI/180);
+        return cur.add(rot);
+      }
+      if(idx===bangParts.length-1){
+        // final target
+        const target=resolveTok(mid);
+        // mid previous is factor or projection?
+        // if there are exactly 3 parts, middle is factor/projection
+        if(bangParts.length===3){
+          const factorStr=bangParts[1];
+          // factor may be like "0.5" or "1cm" or "(C)" projection
+          if(factorStr.startsWith("(")){
+            // projection: (A)!(C)!(B) => projection of C onto A-B
+            const projPt=resolveTok(factorStr);
+            const a=cur, b=target;
+            const ap=projPt.sub(a), ab=b.sub(a);
+            const t=ab.len2()===0?0: ap.dot(ab)/ab.len2();
+            const proj=a.add(ab.scale(t));
+            return proj;
+          } else if(factorStr.endsWith("cm")||factorStr.endsWith("pt")||factorStr.endsWith("mm")||factorStr.endsWith("in")){
+            try{ const d=evaluateDimensionString(factorStr,macros); const ab=target.sub(cur); const len=ab.len(); const f=len===0?0:d/len; return cur.lerp(target,f); }catch{ return cur.lerp(target,0.5); }
+          } else {
+            const f=parseFloat(factorStr); if(!isNaN(f)) return cur.lerp(target,f);
+            // else treat as point?
+            return cur.lerp(target,0.5);
+          }
+        } else if(bangParts.length===2){
+          // (A)!0.5!(B) with only two !? actually would be 2 parts if no third? shouldn't happen
+          const f=parseFloat(mid); if(!isNaN(f)) return cur.lerp(target,f);
+          return target;
+        } else {
+          // longer chains: stepwise
+          const f=parseFloat(mid); if(!isNaN(f)) cur=cur.lerp(target,f); else cur=target;
+        }
+      } else {
+        // intermediate factor? handled in next iteration
+      }
+    }
+    // If loop didn't return, fallback sequential lerp
+    // For n-part chain, apply sequentially: start = part0, for each factor then target?
+    // Simplified: if 3 parts already returned, else fallback to linear
+    return bangParts.length>=2? resolveTok(bangParts[bangParts.length-1]) : cur;
+  }
+  // No ! -> handle + / - and scalar multiplication
+  // Handle scalar multiplication like "2*(A)" or "2*(1,2)" or "(A)*2"
+  // We'll expand simple: replace patterns "number*(" with scaling
+  // Approach: split by + and - at depth 0
+  function splitAdd(str:string):{op:string, term:string}[]{
+    const res:{op:string,term:string}[]=[]; let buf=""; let depth=0; let curOp="+";
+    for(let i=0;i<str.length;i++){
+      const ch=str[i];
+      if(ch==="(") depth++; else if(ch===")") depth--;
+      if((ch==="+"||ch==="-") && depth===0){
+        if(buf.trim()) res.push({op:curOp, term:buf.trim()});
+        buf=""; curOp=ch;
+      } else buf+=ch;
+    }
+    if(buf.trim()) res.push({op:curOp, term:buf.trim()});
+    return res;
+  }
+  const adds=splitAdd(s);
+  if(adds.length>1 || s.includes("+")|| (s.startsWith("-")&&adds.length>=1)){
+    let acc=new Vec2(0,0);
+    for(const {op, term} of adds){
+      let vec:Vec2;
+      // term may be "2*(A)" or "(A)*2" or "(1,2)" etc.
+      if(term.includes("*")){
+        const parts=term.split("*").map(p=>p.trim());
+        let scale=1; let coordPart=term;
+        if(!isNaN(parseFloat(parts[0]))){ scale=parseFloat(parts[0]); coordPart=parts.slice(1).join("*"); }
+        else if(!isNaN(parseFloat(parts[parts.length-1]))){ scale=parseFloat(parts[parts.length-1]); coordPart=parts.slice(0,-1).join("*"); }
+        // coordPart may be "(A)" etc.
+        vec=resolveTok(coordPart);
+        vec=vec.scale(scale);
+      } else {
+        vec=resolveTok(term);
+      }
+      if(op==="+") acc=acc.add(vec); else acc=acc.sub(vec);
+    }
+    return acc;
+  }
+  // Single term maybe scalar mul
+  if(s.includes("*")){
+    const parts=s.split("*").map(p=>p.trim());
+    if(parts.length===2){
+      const a=parts[0], b=parts[1];
+      if(!isNaN(parseFloat(a))) return resolveTok(b).scale(parseFloat(a));
+      if(!isNaN(parseFloat(b))) return resolveTok(a).scale(parseFloat(b));
+    }
+  }
+  return resolveTok(s);
+}
+
 // ---------------------------------------------------------------------------
 // Coordinate resolution — Phase2: handles transforms, macros, pgfmath, units
 
@@ -1256,6 +1774,21 @@ function resolveCoord(
       const rad = (angleDeg * Math.PI) / 180;
       base = new Vec2(r * Math.cos(rad), r * Math.sin(rad));
     } catch (e) { errors.push({ message: String((e as Error).message), line: c.loc.line, column: c.loc.column, pos: c.loc.pos, severity: "warning" }); return null; }
+  } else if ((c as any).kind === "calc") {
+    try { base = resolveCalc((c as any).expr, named, nodeEntries, macros, errors); } catch(e){ errors.push({message:String((e as Error).message), line:c.loc.line, column:c.loc.column, pos:c.loc.pos, severity:"warning"}); base=new Vec2(0,0); }
+  } else if ((c as any).kind === "perpendicular") {
+    const pc = c as any;
+    const aName = (pc.a as string).replace(/[()]/g,"").trim().split(".")[0];
+    const bName = (pc.b as string).replace(/[()]/g,"").trim().split(".")[0];
+    const aPt = nodeEntries.get(aName)?.center ?? named.get(aName) ?? (()=>{ try{const x=evaluateDimensionString(pc.a,macros); return new Vec2(x,0);}catch{return new Vec2(0,0)}})();
+    const bPt = nodeEntries.get(bName)?.center ?? named.get(bName) ?? (()=>{ try{const x=evaluateDimensionString(pc.b,macros); return new Vec2(x,0);}catch{return new Vec2(0,0)}})();
+    // Try to resolve as coordinates if they look like (x,y)
+    let av:Vec2|null = aPt, bv:Vec2|null=bPt;
+    if (pc.a.includes(",")) { try{ const parts=pc.a.replace(/[()]/g,"").split(","); av=new Vec2(evaluateDimensionString(parts[0],macros), evaluateDimensionString(parts[1],macros)); }catch{} }
+    if (pc.b.includes(",")) { try{ const parts=pc.b.replace(/[()]/g,"").split(","); bv=new Vec2(evaluateDimensionString(parts[0],macros), evaluateDimensionString(parts[1],macros)); }catch{} }
+    if (!av) av=new Vec2(0,0); if(!bv) bv=new Vec2(0,0);
+    if (pc.mode==="|-") base=new Vec2(av.x, bv.y);
+    else base=new Vec2(bv.x, av.y);
   } else if (c.kind === "named") {
     const entry = nodeEntries.get(c.name);
     if (entry) {

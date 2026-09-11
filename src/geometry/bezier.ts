@@ -95,6 +95,43 @@ export function approximateArcLength(c: Cubic, steps = 20): number {
   return len;
 }
 
+export function cubicLength(c: Cubic, steps = 40): number { return approximateArcLength(c, steps); }
+
+export function cubicPointAtDistance(c: Cubic, dist: number, steps = 40): { point: Vec2; t: number } {
+  const total = approximateArcLength(c, steps * 2);
+  if (dist <= 0) return { point: c.p0, t: 0 };
+  if (dist >= total) return { point: c.p3, t: 1 };
+  const target = dist;
+  // build cumulative table
+  let table: { t: number; len: number; pt: Vec2 }[] = [{ t: 0, len: 0, pt: c.p0 }];
+  let prev = c.p0;
+  let accum = 0;
+  for (let i = 1; i <= steps * 4; i++) {
+    const t = i / (steps * 4);
+    const pt = cubicPoint(c, t);
+    accum += pt.sub(prev).len();
+    table.push({ t, len: accum, pt });
+    prev = pt;
+  }
+  for (let i = 1; i < table.length; i++) {
+    if (table[i].len >= target) {
+      const a = table[i - 1], b = table[i];
+      const segLen = b.len - a.len;
+      const f = segLen === 0 ? 0 : (target - a.len) / segLen;
+      const t = a.t + (b.t - a.t) * f;
+      return { point: cubicPoint(c, t), t };
+    }
+  }
+  return { point: c.p3, t: 1 };
+}
+
+/** Arc-length parameterization helpers for path */
+export function pointAtT(c: Cubic, t: number): Vec2 { return cubicPoint(c, t); }
+export function tangentAtT(c: Cubic, t: number): Vec2 { return cubicTangent(c, t).norm(); }
+export function arcLength(c: Cubic): number { return approximateArcLength(c, 40); }
+
+export function splitCubicAtT(c: Cubic, t: number) { return cubicSplit(c, t); }
+
 /** Subdivide cubic at t */
 export function cubicSplit(c: Cubic, t: number): [Cubic, Cubic] {
   const p01 = c.p0.lerp(c.p1, t);

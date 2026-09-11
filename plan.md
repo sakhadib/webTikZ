@@ -277,16 +277,16 @@ Effort estimates assume one experienced developer and are rough. Each phase ends
 
 **Goal:** the precise geometric tools that make TikZ powerful.
 
-- [ ] Arc-length parameterization, path length, point/tangent at fraction or at distance.
-- [ ] calc library: `($(A)+(1,2)$)`, `($(A)!.5!(B)$)`, `($(A)!1cm!(B)$)`, projections `($(A)!(C)!(B)$)`, rotation modifiers `!.5!30:(B)`, scalar multiplication, the `let` operation (`\p1`, `\x1`, `\y1`, `\n1`).
-- [ ] Perpendicular coordinates `(A |- B)`, `(A -| B)`.
-- [ ] intersections library: `name path`, `name intersections`, `by=`, `total`, `sort by`; robust Bézier–Bézier and Bézier–line intersection (subdivision + Newton refinement).
-- [ ] arrows.meta: `Stealth`, `Latex`, `To`, `Triangle`, `Circle`, `Square`, `Bar`, `Hooks`, `Kite`, `Rays`, etc., with `length`, `width`, `open`, `round`, `reversed`, `sep`, `scale`, `bend`; multiple tips (`>>`, `|<->|`); `shorten <`, `shorten >`; legacy tips (`latex`, `stealth`, `to`).
-- [ ] Shading: axis and radial shadings, `left/right/top/bottom/middle color`, `inner/outer color`, `ball color`, `shading angle`, `\shade`, `\shadedraw`.
-- [ ] Patterns: `lines`, `north east lines`, `crosshatch`, `dots`, `grid`, `bricks`, `checkerboard`, parameterized `patterns.meta`.
-- [ ] Bounding-box control: `use as bounding box`, `overlay`, `trim left/right`, `current bounding box` node, `baseline`.
+- [x] Arc-length parameterization, path length, point/tangent at fraction or at distance.
+- [x] calc library: `($(A)+(1,2)$)`, `($(A)!.5!(B)$)`, `($(A)!1cm!(B)$)`, projections `($(A)!(C)!(B)$)`, rotation modifiers `!.5!30:(B)`, scalar multiplication, the `let` operation (`\p1`, `\x1`, `\y1`, `\n1`).
+- [x] Perpendicular coordinates `(A |- B)`, `(A -| B)`.
+- [x] intersections library: `name path`, `name intersections`, `by=`, `total`, `sort by`; robust Bézier–Bézier and Bézier–line intersection (subdivision + Newton refinement).
+- [x] arrows.meta: `Stealth`, `Latex`, `To`, `Triangle`, `Circle`, `Square`, `Bar`, `Hooks`, `Kite`, `Rays`, etc., with `length`, `width`, `open`, `round`, `reversed`, `sep`, `scale`, `bend`; multiple tips (`>>`, `|<->|`); `shorten <`, `shorten >`; legacy tips (`latex`, `stealth`, `to`).
+- [x] Shading: axis and radial shadings, `left/right/top/bottom/middle color`, `inner/outer color`, `ball color`, `shading angle`, `\shade`, `\shadedraw`.
+- [x] Patterns: `lines`, `north east lines`, `crosshatch`, `dots`, `grid`, `bricks`, `checkerboard`, parameterized `patterns.meta`.
+- [x] Bounding-box control: `use as bounding box`, `overlay`, `trim left/right`, `current bounding box` node, `baseline`.
 
-**Exit:** pgfmanual calc, intersections, arrows, shadings, and patterns sections at 80% or more.
+**Exit:** pgfmanual calc, intersections, arrows, shadings, and patterns sections at 80% or more. — **Done 2026-09-11. Bundle 112 KB / 35 KB gz. 46 tests (`tests/unit/phase4.test.ts`), 312 total.**
 
 ### Phase 5 — Composition (4–6 weeks)
 

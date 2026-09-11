@@ -8,7 +8,9 @@ export type Option = { raw: string; key: string; value?: string; loc: Loc };
 export type Coordinate =
   | { kind: "cartesian"; x: string; y: string; loc: Loc; relative: "plus" | "plusplus" | null }
   | { kind: "polar"; angle: string; radius: string; loc: Loc; relative: "plus" | "plusplus" | null }
-  | { kind: "named"; name: string; anchor?: string; loc: Loc; relative: "plus" | "plusplus" | null };
+  | { kind: "named"; name: string; anchor?: string; loc: Loc; relative: "plus" | "plusplus" | null }
+  | { kind: "calc"; expr: string; loc: Loc; relative: "plus" | "plusplus" | null }
+  | { kind: "perpendicular"; a: string; b: string; mode: "|-" | "-|"; loc: Loc; relative: "plus" | "plusplus" | null };
 
 export type PathNode = {
   kind: "node";
@@ -34,12 +36,13 @@ export type PathOp =
   | { kind: "cos"; to: Coordinate; loc: Loc }
   | { kind: "to"; to: Coordinate; options: Option[]; loc: Loc }
   | { kind: "pathNode"; node: PathNode; loc: Loc }
+  | { kind: "let"; assignments: { p?: string; x?: string; y?: string; n?: string; expr: string; coord?: Coordinate }[]; loc: Loc }
   | { kind: "cycle"; loc: Loc }
   | { kind: "raw"; text: string; loc: Loc };
 
 export type PathStatement = {
   kind: "path";
-  action: "draw" | "fill" | "filldraw" | "path" | "shade" | "clip";
+  action: "draw" | "fill" | "filldraw" | "path" | "shade" | "shadedraw" | "clip";
   options: Option[];
   ops: PathOp[];
   loc: Loc;
@@ -268,6 +271,48 @@ export function parse(source: string): ParseResult {
     if (depth !== 0) pushError("Unclosed '(' in coordinate", lp);
     const inner = innerTokens.map(t => t.text).join("").trim();
     if (!inner) { pushError("Empty coordinate", lp); return null; }
+
+    // Calc: ($...$)  inner starts with $ and ends with $
+    {
+      const trimmed = inner.trim();
+      if (trimmed.startsWith("$") && trimmed.endsWith("$")) {
+        const expr = trimmed.slice(1, -1).trim();
+        return { kind: "calc", expr, loc: startLoc, relative } as Coordinate;
+      }
+      // also handle without outer $ but containing $ at start? e.g., $ (A) $ without?
+      if (innerTokens.length>0 && innerTokens[0].kind==="dollar") {
+        const withoutFirst = innerTokens.slice(1);
+        // find last dollar
+        let lastDollar=-1;
+        for(let k=withoutFirst.length-1;k>=0;k--) if(withoutFirst[k].kind==="dollar") {lastDollar=k;break;}
+        if(lastDollar!==-1){
+          const exprToks=withoutFirst.slice(0,lastDollar);
+          const expr=exprToks.map(t=>t.text).join("").trim();
+          return { kind: "calc", expr, loc: startLoc, relative } as Coordinate;
+        }
+      }
+    }
+    // Perpendicular: (A |- B) or (A -| B)  contains |- or -|
+    {
+      // detect |- or -| as op token inside innerTokens
+      for (let idx=0; idx<innerTokens.length; idx++){
+        if(innerTokens[idx].kind==="op" && (innerTokens[idx].text==="|-"||innerTokens[idx].text==="-|")){
+          const leftToks=innerTokens.slice(0,idx);
+          const rightToks=innerTokens.slice(idx+1);
+          const left=leftToks.map(t=>t.text).join("").trim();
+          const right=rightToks.map(t=>t.text).join("").trim();
+          if(left && right){
+            return { kind: "perpendicular", a:left, b:right, mode:innerTokens[idx].text as "|-"|"-|", loc:startLoc, relative } as Coordinate;
+          }
+        }
+      }
+      // fallback string contains "|-
+      if(inner.includes("|-")||inner.includes("-|")){
+        const mode = inner.includes("|-") ? "|-" as const : "-|" as const;
+        const parts=inner.split(mode);
+        if(parts.length===2) return { kind:"perpendicular", a:parts[0].trim(), b:parts[1].trim(), mode, loc:startLoc, relative } as Coordinate;
+      }
+    }
 
     // Polar: contains ':' at depth 0 (not inside braces/parens)
     let colonIdx = -1;
@@ -774,6 +819,42 @@ export function parse(source: string): ParseResult {
         ops.push({ kind: "orthH", coord, loc });
         continue;
       }
+      // let operation
+      if (t.kind === "ident" && t.text.toLowerCase() === "let") {
+        const lloc = locFrom(consume());
+        const assigns: { p?: string; x?: string; y?: string; n?: string; expr: string; coord?: Coordinate }[] = [];
+        while (peek() && !(peek()!.kind === "ident" && peek()!.text.toLowerCase() === "in")) {
+          const tok = peek()!;
+          if (tok.kind === "cs" && tok.text.startsWith("\\")) {
+            const name = tok.text;
+            consume();
+            let kind: "p"|"x"|"y"|"n" = "p";
+            if (name.startsWith("\\p")) kind="p";
+            else if (name.startsWith("\\x")) kind="x";
+            else if (name.startsWith("\\y")) kind="y";
+            else if (name.startsWith("\\n")) kind="n";
+            if (peek()?.kind === "equals") consume();
+            let expr = "";
+            let coord: Coordinate | undefined;
+            if (peek()?.kind === "lparen" || peek()?.kind === "plus") {
+              const c = parseCoordinate();
+              if (c) { coord = c; expr = `coord:${c.kind}`; }
+            } else if (peek()?.kind === "lbrace") {
+              expr = parseBraceRaw() ?? "";
+            } else if (peek()) {
+              expr = consume()!.text;
+            }
+            const rec:any={expr, coord};
+            if(kind==="p") rec.p=name; else if(kind==="x") rec.x=name; else if(kind==="y") rec.y=name; else rec.n=name;
+            assigns.push(rec);
+          } else if (tok.kind==="comma") { consume(); }
+          else { consume(); }
+          if (peek()?.kind==="comma") consume();
+        }
+        if (peek()?.kind==="ident" && peek()!.text.toLowerCase()==="in") consume();
+        ops.push({ kind:"let", assignments: assigns, loc: lloc });
+        continue;
+      }
       // node on path — e.g., node[options] (name) {text}
       if (t.kind === "ident" && t.text.toLowerCase() === "node") {
         const loc = locFrom(consume());
@@ -1103,6 +1184,7 @@ export function parse(source: string): ParseResult {
         case "\\filldraw":
         case "\\path":
         case "\\shade":
+        case "\\shadedraw":
         case "\\clip":
           return parsePathStatement(consume()!);
         case "\\coordinate":
@@ -1223,6 +1305,7 @@ export function parse(source: string): ParseResult {
       "\\filldraw": "filldraw",
       "\\path": "path",
       "\\shade": "shade",
+      "\\shadedraw": "shadedraw",
       "\\clip": "clip",
     };
     const act = actionMap[cs.text] ?? "path";
@@ -1469,8 +1552,8 @@ export function parse(source: string): ParseResult {
       }
       continue;
     }
-    // Top-level statements that create implicit pictures
-    if (t.kind === "cs" && ["\\draw", "\\fill", "\\filldraw", "\\path", "\\coordinate", "\\clip", "\\shade", "\\node"].includes(t.text)) {
+     // Top-level statements that create implicit pictures
+    if (t.kind === "cs" && ["\\draw", "\\fill", "\\filldraw", "\\path", "\\coordinate", "\\clip", "\\shade", "\\shadedraw", "\\node"].includes(t.text)) {
       if (t.text === "\\node") {
         const stmt = parseNodeStatement(consume()!);
         if (stmt) {

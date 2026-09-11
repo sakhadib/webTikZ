@@ -24,13 +24,32 @@ export interface FillStyle {
   rule: "nonzero" | "evenodd";
 }
 
+export interface GradientFill {
+  kind: "linear" | "radial";
+  colors: { offset: number; color: string }[];
+  angleDeg?: number; // for linear
+  innerColor?: string;
+  outerColor?: string;
+}
+export interface PatternFill {
+  kind: "pattern";
+  name: string; // e.g., "north east lines"
+  color: string;
+  background?: string;
+}
+
 export interface DisplayPath {
   kind: "path";
   segments: PathSegment[];
   stroke: StrokeStyle | null;
   fill: FillStyle | null;
+  gradient?: GradientFill | null;
+  pattern?: PatternFill | null;
   // how path was closed/traced for bounding-box expansion (stroke width)
   isClosed: boolean;
+  // bbox flags
+  useAsBoundingBox?: boolean;
+  overlay?: boolean;
 }
 
 export interface DisplayText {
